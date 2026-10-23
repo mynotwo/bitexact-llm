@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bitexact"
+version = "0.1.0"
+description = "Bit-reproducible Llama inference with integer arithmetic: identical logits across GPUs, CPUs, batch sizes and KV-cache schedules"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.4", "numpy", "safetensors", "transformers"]
+
+[project.optional-dependencies]
+triton = ["triton>=3.0"]
+vllm = ["vllm==0.32.0"]
+test = ["pytest"]
+
+[project.entry-points."vllm.general_plugins"]
+bitexact = "bitexact.vllm_plugin:register"
+
+[project.entry-points."vllm.logits_processors"]
+bitexact_sampler = "bitexact.vllm_plugin.sampler:IntSampler"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["gpu: needs a CUDA device", "slow: needs a model checkpoint or constants file (set BITEXACT_* env vars)"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E731"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["bitexact"]

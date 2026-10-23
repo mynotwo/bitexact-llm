@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Weights, constants and outputs (never committed)
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.gguf
+*.npz
+*.hash
+*.plan
+*.log
+out/
+runs/
+outputs/
+intmodel*/
