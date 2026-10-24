@@ -1,7 +1,7 @@
 # BitExact LLM
 
 Bit-reproducible Llama inference with integer arithmetic. The same prompt, seed and model give the same
-logits, bit for bit, on an H800, an H100, an x86 CPU and an Apple M4 Pro CPU, at batch size 1 or 8, with or
+logits, bit for bit, on an H800, an H100, an L20, an x86 CPU and an Apple M4 Pro CPU, at batch size 1 or 8, with or
 without the KV cache. The int8 mode also keeps every bit inside a busy vLLM server.
 
 Personal research project by Yu (Audrey) Mao. Homepage: https://mynotwo.github.io/
@@ -324,8 +324,8 @@ Plugin limitations:
   `bitexact/llama.py`; other Llama sizes need new bound checks.
 - Contexts up to 4,096 positions in exact mode and 2,048 in int8 mode (the RoPE table length; the vLLM
   plugin rebuilds longer tables at load time).
-- GPU results were tested on Hopper only (H800, H100). Other GPU architectures are untested; the CPU path
-  was tested on x86 and Apple M4 Pro.
+- GPU results were tested on Hopper (H800, H100) and Ada (L20). V100 (sm70) is not supported because Triton
+  3.0 cannot compile the kernels; A100 and H20 are untested. The CPU path was tested on x86 and Apple M4 Pro.
 - The constants file of exact mode is about 4.8 GB (3 bytes per weight plus residuals and tables).
 - Not a serving system: the standalone engines have no paging or scheduler, and prefill is slow. The vLLM
   plugin provides paging, but only through the offline API (see above).
