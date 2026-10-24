@@ -16,7 +16,8 @@ Personal research project by Yu (Audrey) Mao. Homepage: https://mynotwo.github.i
   and in prefill; its logits differ from fp32 by about 9e-2, about 3x bf16's error.
 
 Both share the integer rules, the attention kernel and the sampler. An optional vLLM plugin
-(`bitexact.vllm_plugin`) serves the int8 mode through vLLM's scheduler, paged KV cache and prefix cache.
+(`bitexact.vllm_plugin`) serves the int8 mode through vLLM's scheduler, paged KV cache and prefix cache
+(see "vLLM plugin" below).
 For comparison, `bitexact.det_float` is a float bf16 engine made batch-invariant with fixed Triton tiles.
 
 ## Why integers make results order-independent
@@ -122,11 +123,19 @@ python -m bitexact.vllm_plugin.make_model_dir --hf PATH/Llama-3.2-1B --const int
 python examples/vllm_offline.py --model intmodel --out run1
 ```
 
+The invariance suite and the throughput script are in `tests/vllm/`:
+
+```
+GPUS="1 2 3" MODEL=intmodel CONST=int8_const.pt bash tests/vllm/run_tests.sh TAG
+GPU=3 BF16_MODEL=PATH/Llama-3.2-1B MODEL=intmodel bash tests/vllm/bench_seq.sh
+```
+
 ## Tests
 
 ```
 pytest -q                                    # CPU unit tests; GPU tests run when CUDA is present
 BITEXACT_EXACT_CONST=exact_const.pt BITEXACT_INT8_CONST=int8_const.pt pytest -q -m slow
+BITEXACT_INT8_CONST=int8_const.pt pytest -q tests/vllm/test_decode_paths.py   # plugin decode paths, CUDA
 ```
 
 The unit tests compare each primitive with Python big-integer and `Fraction` references (division,
@@ -237,31 +246,64 @@ by kernel launches.
 
 ### vLLM plugin (int8 mode)
 
-vLLM 0.32.0. 12 target prompts (lengths 7 to 700, 6 sharing a 320-token prefix; T = 0 / 0.7 / 1.0; 48
-tokens each, 576 positions) were run alone and inside busy mixed batches with 40 filler requests arriving
-at random engine steps: chunked prefill with budgets of 64 / 256 / 512 tokens per step, prefix cache on and
-off, and a KV cache of 160 blocks that forced 5 preemptions and recomputation. Every run, with and without
-the plugin's CUDA graphs and torch.compile, matched the standalone int8 engine with 0 differing token
-sequences and 0 differing logits hashes. The same 8 runs on H800 matched the H100 reference with 0
-differences.
+The plugin (`src/bitexact/vllm_plugin/`) runs the int8 engine inside vLLM 0.32.0 with vLLM's scheduler, block
+manager, slot mapping and prefix cache.
 
-Throughput on one H100 (128 input + 128 output tokens per request, including prefill):
+What it does:
 
-| Config (output tok/s) | B=1 | B=32 | B=128 |
+- **Paged integer attention.** The KV cache is vLLM's own bf16 cache, read as int32 (one K and one V limb block
+  per KV head). Two Triton kernels read K and V in place through the block table; nothing is gathered into a
+  copy and no score matrix is written to memory. Each kernel call is split into key ranges that combine with
+  int64 atomic adds and max, so the split count does not change any bit.
+- **Long context.** `max_model_len` is 32,768. At load time the integer RoPE table is rebuilt to that length
+  with the same formula as the constants file, and the first rows are checked bit for bit against it. Tested
+  invariance runs go up to 14,000 tokens; longer contexts run but were not part of the invariance tests.
+- **Weight table.** The attention weight table is computed once when the model loads, not during a forward
+  pass or graph capture.
+- **Compile split.** The integer element-wise work before and after attention (norm, quantization, RoPE, the
+  int8 GEMMs and their epilogue, SiLU) runs as two torch.compile regions per layer (`BITEXACT_COMPILE_LAYER=1`,
+  the default). The KV-cache write and the attention kernel stay outside torch.compile. A version that compiled
+  the whole layer including the KV write lost the written K/V and gave logits different from the engine.
+- **Decode graphs.** Uniform decode batches run as CUDA graphs: vLLM's own (default, `enforce_eager=False`) or
+  the plugin's (`enforce_eager=True`, `BITEXACT_GRAPHS=1`). Both are covered by the invariance suite.
+- **Sampling.** Greedy or temperature sampling with integer Gumbel noise keyed by (seed, token index); the
+  token is chosen from the exact integer logits.
+
+Invariance (vLLM 0.32.0, H800; `tests/vllm/run_tests.sh`, 14 runs). The reference is the integer engine run
+without vLLM, one request at a time. Short targets: 12 prompts of 7 to 700 tokens (6 share a 320-token
+prefix), T = 0 / 0.7 / 1.0, 48 tokens each, 576 positions. Long targets: 5,000, 9,000 and 14,000 tokens, 16
+tokens each, 48 positions.
+
+| Runs | Positions | Token sequences differing | Logits hashes differing |
 |---|---|---|---|
-| vLLM bf16, CUDA graphs | 659 | 15,113 | 34,733 |
-| vLLM bf16 batch-invariant, CUDA graphs | 212 | 7,356 | 19,104 |
-| plugin, greedy | 215 | 2,740 | 5,044 |
-| plugin, T = 1 | 138 | 1,350 | 1,370 |
+| 10 short-target runs: alone, busy mixed batches with 40 fillers (chunked prefill budgets 64 / 256 / 512, prefix cache on and off, 160-block KV cache with 5 preemptions, full eager with max_num_seqs 128, vLLM graphs) | 576 each | 0 | 0 |
+| 4 long-target runs (alone, busy with prefix cache, busy eager without prefix cache, vLLM graphs) | 48 each | 0 | 0 |
 
-At batch 32 to 128 the plugin runs at 15-18% of stock vLLM bf16 (greedy). With T > 0 each step generates
-128,256 PCG64 words per request for the noise.
+The integer reference used here is byte-identical to the reference of the earlier H800 verification (the
+short and long logits-hash files match).
+
+Throughput on one H800 (GPU empty before the run; 128 input and 128 output tokens per request, `max_num_seqs`
+= batch; the second of two identical generate calls is timed, so it includes prefill; `tests/vllm/bench.py`):
+
+| Configuration | Output tok/s, batch 32 |
+|---|---|
+| vLLM bf16, CUDA graphs (stock) | 15,881 |
+| integer plugin, greedy (T = 0), vLLM graphs | 4,490 |
+| integer plugin, T = 1 | 4,162 |
+
+The integer plugin runs at about 0.28x of stock vLLM bf16 at batch 32 (greedy). The project's goal is
+reproducibility, not speed parity: the numbers are reported as measured.
+
+Long-context decode, one H800, plugin graph replay, S = 16,384 (`tests/vllm/longctx_step.py`, CUDA event median):
+
+| Batch | Decode ms per step | Prefill of a 512-token chunk at S = 16,384 |
+|---|---|---|
+| 1 | 3.63 | 102 ms |
+| 8 | 12.57 | 101 ms |
 
 Plugin limitations:
 
-- The published invariance and throughput results use `enforce_eager=True` (the plugin then captures its
-  own CUDA graphs for pure decode steps). Running under vLLM's own CUDA graphs is supported in the code but
-  not covered by those results. Single GPU only (TP = 1, PP = 1); no speculative decoding.
+- Single GPU only (TP = 1, PP = 1); no speculative decoding.
 - Sampling uses only temperature and seed. top-k, top-p, min-p, repetition penalties and logit bias are
   ignored. Requests without a seed use seed 0, so two such requests with the same temperature get the same
   noise.
@@ -269,8 +311,8 @@ Plugin limitations:
   the reproducible outputs are the tokens and the integer logits hashes.
 - Tested with the offline `LLM` / `LLMEngine` API only, not `vllm serve`.
 - Cross-GPU tests covered H100 and H800 only (both sm90).
-- `BITEXACT_COMPILE_LAYER=1` (one torch.compile region per decoder layer) is experimental and off by
-  default: replayed inside the plugin's CUDA graphs it changed logits on vLLM 0.32 / torch 2.13.
+- The attention kernel is memory-bound on long context: each key is read twice (once for the maximum, once for
+  the weighted sums), and each score uses nine int8 limb products.
 
 ## Limitations
 
@@ -281,7 +323,8 @@ Plugin limitations:
 - GPU results were tested on Hopper only (H800, H100). Other GPU architectures are untested; the CPU path
   was tested on x86 and Apple M4 Pro.
 - The constants file of exact mode is about 4.8 GB (3 bytes per weight plus residuals and tables).
-- Not a serving system: the standalone engines have no paging or scheduler, and prefill is slow.
+- Not a serving system: the standalone engines have no paging or scheduler, and prefill is slow. The vLLM
+  plugin provides paging, but only through the offline API (see above).
 - `bitexact.det_float` is a float engine: its results are fixed only for one GPU architecture and Triton
   version, unlike the integer modes.
 

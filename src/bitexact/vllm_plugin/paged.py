@@ -150,14 +150,15 @@ def mlp(m, ly, x):
     return m._linear((a8, mant, e), ly["wd"], x)
 
 
-def decode_attention(m, ly, x, pos, kv, slot, blocks):
-    """All rows are single-token decodes, no host syncs (CUDA-graph safe). Padding rows: slot 0 (vLLM's
-    null block 0, never given to a request) and position 0."""
-    q, k, v = _qkv(m, ly, x, pos)
+@torch.compiler.disable
+def decode_store_attend(m, q, k, v, pos, kv, slot, blocks):
+    """All rows are single-token decodes, no host syncs (CUDA-graph safe): write K / V at slot, then attend.
+    Kept out of torch.compile (the cache is a dtype view and must be written in place). Padding rows: slot 0
+    (vLLM's null block 0, never given to a request) and position 0."""
     c = kv_view(kv)
     bs = c.shape[2]
     c[slot // bs, :, slot % bs] = torch.cat([k, v], -1).to(torch.int32)
-    return _out(m, ly, _attend(m, q, pos.view(-1, 1).expand(-1, G), c, blocks), x)
+    return _attend(m, q, pos.view(-1, 1).expand(-1, G), c, blocks)
 
 
 def attention(m, i, x, pos, kv, plan):

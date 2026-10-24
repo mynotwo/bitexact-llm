@@ -177,6 +177,7 @@ def weight_table(lut):
 SM_TARGET = 264        # programs to aim for (2 per SM on H100 / H800)
 
 
+@torch.compiler.disable          # a graph break for torch.compile callers: the launch picks nsplit from shapes
 def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=64, warps=4):
     """q int64 [R, HKV, M, HD] (|q| within 3 limbs), qpos int64 [R, M] (key s visible to query i iff
     s <= qpos[r, i]), cache int32 [nb, HKV, bs, 2 HD], bt [R, *] block-table rows, ptab = weight_table(exp table).

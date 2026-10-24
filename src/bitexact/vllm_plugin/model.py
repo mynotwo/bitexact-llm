@@ -39,7 +39,8 @@ def _extend_rope(c, model_dir, n):
     rule (llama3 scaling, float64, rounded once) and check the first rows are bit-identical."""
     if c["cos"].shape[0] >= n:
         return
-    cos, sin = rope_tables(model_dir, n, FT)
+    with torch.device("cpu"):                 # vLLM sets a CUDA default device while it builds models
+        cos, sin = rope_tables(model_dir, n, FT)
     m = c["cos"].shape[0]
     assert torch.equal(cos[:m], c["cos"]) and torch.equal(sin[:m], c["sin"]), "RoPE rows differ"
     c["cos"], c["sin"] = cos, sin
@@ -64,8 +65,9 @@ class BitExactLlamaForCausalLM(nn.Module):
             vllm_config.model_config.enforce_eager
         self.max_len = vllm_config.model_config.max_model_len
         self.graphs = None
-        self.warm = False
         self.sha = c["sha256"]
+        log = os.environ.get("BITEXACT_HASH_LOG")
+        self.plan_log = log and log[:-len(".hash")] + ".plan"    # batch layout per forward (plan_stats.py)
         del c
         # Attention layers only to get vLLM's KV cache: 8 KV heads x 128 bf16 = 8 x 64 int32 (K | V).
         self.attn = nn.ModuleList([
@@ -83,8 +85,16 @@ class BitExactLlamaForCausalLM(nn.Module):
         meta = get_forward_context().attn_metadata
         return meta.get(self.layer0) if isinstance(meta, dict) else meta
 
+    def _log_plan(self, plan):
+        """One line per forward: tokens, decode requests, prefill requests, and of those how many start
+        after position 0 (a later chunk of a chunked prefill, or a prefix-cache hit)."""
+        with open(self.plan_log, "a") as f:
+            f.write(f"{plan.n} {plan.dec_req.numel()} {len(plan.pre)} "
+                    f"{sum(sl - ql > 0 for _, _, ql, sl in plan.pre)}\n")
+
     def _captured_decode(self, input_ids, positions, meta):
-        """vLLM is capturing its CUDA graph of a uniform decode batch: device-only forward."""
+        """Uniform decode batch (one token per request, batch order = block-table rows), device-only forward;
+        this is what vLLM captures and replays."""
         from bitexact.vllm_plugin.graph import decode_forward
         N = input_ids.shape[0]
         bt = meta.block_table
@@ -93,29 +103,20 @@ class BitExactLlamaForCausalLM(nn.Module):
         return decode_forward(self.m, [a.kv_cache for a in self.attn], input_ids, positions,
                               meta.slot_mapping[:N], bt)
 
-    def _warm_decode(self, meta):
-        """Compile and load every kernel of the decode path before vLLM captures it (a kernel cannot be
-        loaded during CUDA graph capture). Dummy rows write only to the null block 0."""
-        from bitexact.vllm_plugin.graph import decode_forward
-        kvs = [a.kv_cache for a in self.attn]
-        for B in (1, 2, 3, 8, 64):
-            dev = meta.block_table.device
-            decode_forward(self.m, kvs, torch.zeros(B, dtype=torch.long, device=dev),
-                           torch.zeros(B, dtype=torch.long, device=dev),
-                           torch.zeros(B, dtype=meta.slot_mapping.dtype, device=dev),
-                           torch.zeros(B, meta.block_table.shape[1], dtype=meta.block_table.dtype, device=dev))
-        torch.cuda.synchronize()
-        self.warm = True
-
     def forward(self, input_ids, positions, intermediate_tensors=None, inputs_embeds=None, **kw):
         meta = self._meta()
         if meta is not None and torch.cuda.is_current_stream_capturing():
             return self._captured_decode(input_ids, positions, meta)
-        if meta is not None and not self.use_graphs and not self.warm:
-            self._warm_decode(meta)
         x = self.embed_input_ids(input_ids) if inputs_embeds is None else inputs_embeds.long()
         N = x.shape[0]
         plan = None if meta is None else paged.make_plan(meta, N, positions)
+        if plan is not None and self.plan_log:
+            self._log_plan(plan)
+        if plan is not None and not self.use_graphs and not plan.pre and plan.n == N \
+                and plan.dec_req.numel() == N:
+            # Uniform decode with vLLM's graphs on: the device-only path vLLM captures. vLLM's warm-up run
+            # calls it right before each capture, so the kernels are compiled and loaded outside the capture.
+            return self._captured_decode(input_ids, positions, meta)
         if self.use_graphs and plan is not None:
             if self.graphs is None:
                 from bitexact.vllm_plugin.graph import DecodeGraphs

@@ -21,22 +21,29 @@ from bitexact.vllm_plugin import paged
 BUCKETS = [1, 2, 4, 8, 16, 32, 64, 128]
 
 
-def _layer(m, ly, x, pos, kv, slot, bt):
-    return paged.mlp(m, ly, paged.decode_attention(m, ly, x, pos, kv, slot, bt))
+def _pre(m, ly, x, pos):
+    return paged._qkv(m, ly, x, pos)
 
 
-_LAYER = {}
+def _post(m, ly, o, x):
+    return paged.mlp(m, ly, paged._out(m, ly, o, x))
 
 
-def _layer_fn():
-    """One decoder layer, optionally as one torch.compile region (BITEXACT_COMPILE_LAYER=1, experimental,
-    off by default): with vLLM 0.32 / torch 2.13 the compiled layer replayed inside the plugin's CUDA graphs
-    gave logits different from the eager engine, so it is not part of the tested configuration."""
-    if "f" not in _LAYER:
-        on = os.environ.get("BITEXACT_COMPILE_LAYER", "0") == "1"
+_FN = {}
+
+
+def _fns():
+    """The integer ops before and after attention, each as one torch.compile region (BITEXACT_COMPILE_LAYER=1,
+    default): Inductor fuses the elementwise ops around the int8 GEMMs. The KV-cache write and the attention
+    kernel stay outside the compiled regions: the cache is a dtype view (bf16 storage seen as int32) that a
+    compiled region must not mutate (a compiled full-layer region lost the written K/V, and decode logits
+    then differed from the eager engine)."""
+    if not _FN:
+        on = os.environ.get("BITEXACT_COMPILE_LAYER", "1") == "1"
         torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, 64)
-        _LAYER["f"] = torch.compile(_layer, dynamic=None) if on else _layer
-    return _LAYER["f"]
+        wrap = (lambda f: torch.compile(f, dynamic=None)) if on else (lambda f: f)
+        _FN["pre"], _FN["post"] = wrap(_pre), wrap(_post)
+    return _FN["pre"], _FN["post"]
 
 
 def decode_forward(m, kvs, ids, pos, slot, bt):
@@ -44,9 +51,12 @@ def decode_forward(m, kvs, ids, pos, slot, bt):
     x = m.emb[ids].long()
     pos = pos.long()
     slot = torch.where(slot < 0, torch.zeros_like(slot), slot).long()
-    f = _layer_fn()
+    pre, post = _fns()
     for i in range(m.L):
-        x = f(m, m.layers[i], x, pos, kvs[i], slot, bt)
+        ly = m.layers[i]
+        q, k, v = pre(m, ly, x, pos)
+        o = paged.decode_store_attend(m, q, k, v, pos, kvs[i], slot, bt)
+        x = post(m, ly, o, x)
     m._flag(x.abs().amax() >= 1 << 42)
     return x
 
