@@ -182,10 +182,14 @@ incremental.
 | H800 cuBLAS `_int_mm` | same | 512 / 0 / 0 | 512 / 0 / 0 |
 | H100 Triton | torch 2.6.0, Triton 3.2 | 512 / 0 / 0 | 512 / 0 / 0 |
 | H100 torch.compile | same | 512 / 0 / 0 | 512 / 0 / 0 |
+| NVIDIA L20, Triton | torch 2.4.1+cu124, Triton 3.0, driver 535.261.03, CUDA 12.4 | 512 / 0 / 0 | — |
 | x86 CPU (float64 limb GEMM) | x86_64 | 512 / 0 / 0 | 512 / 0 / 0 |
 
 Constants files built from the same safetensors on two machines (torch 2.4 and torch 2.6) have the same
 SHA-256.
+
+Not supported: V100 (sm70). The constants build gives the same SHA-256, but Triton 3.0 cannot compile the
+kernels for sm70 (`PassManager::run failed` in make_ttgir), so no logits were compared.
 
 ### Accuracy
 
