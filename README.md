@@ -1,10 +1,13 @@
 # BitExact LLM
 
-Bit-reproducible Llama inference with integer arithmetic. The same prompt, seed and model give the same
-logits, bit for bit, on an H800, an H100, an L20, an x86 CPU and an Apple M4 Pro CPU, at batch size 1 or 8, with or
-without the KV cache. The int8 mode also keeps every bit inside a busy vLLM server.
+An experimental Llama-3.2-1B inference engine built around integer arithmetic. It studies bit-identical
+logits and sampled tokens across devices, batch sizes and KV-cache schedules, with exact-bf16-weight
+and int8 modes and an int8 vLLM plugin. Historical model runs are documented below; the current
+reproduction preview adds a weight-free CPU entry point and stricter model reports.
 
-Personal research project by Yu (Audrey) Mao. Homepage: https://mynotwo.github.io/
+Personal research project by Yu (Audrey) Mao. [Technical article](https://mynotwo.github.io/blog/bitexact-inference/)
+· [CPU checks](https://github.com/mynotwo/bitexact-llm/actions/workflows/cpu.yml)
+· [Homepage](https://mynotwo.github.io/)
 
 ## Verify it yourself
 
