@@ -1,5 +1,5 @@
 name: CPU reproduction checks
-on:
+"on":
   push:
     branches: [main]
   pull_request:
