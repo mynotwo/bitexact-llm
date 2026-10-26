@@ -129,7 +129,9 @@ class ExactLlama:
 
     def logits_q(self, q, sh):
         """Final-norm rows (q, sh) -> logits int64 [M, V] at FR."""
-        return self.sg.lin_out(*self.lm(q), sh)
+        y, flag = self.sg.lin_out(*self.lm(q), sh)
+        self.err = self.err | flag
+        return y
 
     def logits(self, x):
         """Final residual rows [M, D] -> logits int64 [M, V] at FR."""

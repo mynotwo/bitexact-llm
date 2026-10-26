@@ -54,9 +54,12 @@ This describes exact mode. int8 mode follows the same scheme with int8 weights (
 two limbs, and direct exp / SiLU tables.
 
 Bounds (|x| < 2^40, KV values within 3 limbs, products < 2^62, ...) are checked on the device, and
-`model.check()` raises `OverflowError` if one was violated. Two gaps remain: the o_proj / down_proj outputs
-are checked only after they are added to the residual stream, and the final logits are not checked. No
-check fired in any of the runs below.
+`model.check()` raises `OverflowError` if a checked bound was violated. Exact-mode o_proj / down_proj
+outputs are now checked before residual addition; final logits are checked too. The linear epilogue
+also flags left-shift bit loss and rejects unsupported positive shifts above 30 for nonzero inputs.
+These guards retain the preceding GEMM and residual-accumulation input contracts; they are not a proof
+that every arithmetic operation is overflow-free. The historical model runs below predate these guards;
+the added CPU regressions do not re-establish whole-model or CUDA identity for the changed source.
 
 ## Guarantees and their scope
 

@@ -22,18 +22,19 @@ FK, FV, FP = 17, 19, 22                                     # k, v, attention we
 
 
 # ---- stages ----
-def lin_y(C, rs, d, g, sh):
+def lin_y(C, rs, d, g, sh, checked=False):
     T = C.sum(0) if C.dim() == 3 else C
     if len(rs) == 1:
         B = rs[0]
     else:
         q, ec, ev = rs
         B = (q[:, ec].long() * ev).sum(-1) if ec.shape[1] else torch.zeros_like(T)
-    return epilogue(T, B, d, g, sh, FR)
+    return epilogue(T, B, d, g, sh, FR, checked=checked)
 
 
 def lin_add(C, rs, d, g, sh, x):
-    return x + lin_y(C, rs, d, g, sh).view(x.shape)
+    y, flag = lin_y(C, rs, d, g, sh, checked=True)
+    return x + y.view(x.shape), flag
 
 
 def rms(x, err):
@@ -123,11 +124,11 @@ class Segs:
         return self.norm_q(x, gm, ge, torch.zeros((), dtype=torch.bool, device=x.device))[:2]
 
     def lin_out(self, C, rs, d, g, sh):
-        return self.s.lin_y(C, rs, d, g, sh)
+        return self.s.lin_y(C, rs, d, g, sh, True)
 
     def add_norm(self, C, rs, d, g, sh, x, gm, ge, err):
-        x = self.s.lin_add(C, rs, d, g, sh, x)
-        q, s, err = self.norm_q(x.view(-1, D), gm, ge, err)
+        x, flag = self.s.lin_add(C, rs, d, g, sh, x)
+        q, s, err = self.norm_q(x.view(-1, D), gm, ge, err | flag)
         return x, q, s, err
 
     def qkv(self, C, rs, d, g, sh, pos, cos, sin, B, T, err):
