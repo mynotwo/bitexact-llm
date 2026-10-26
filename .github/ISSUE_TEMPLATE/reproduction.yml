@@ -1,0 +1,50 @@
+name: Device reproduction report
+description: Share a successful or failing reproduction on your own device.
+title: '[Reproduction] device / mode / source revision'
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for checking BitExact. Both matches and mismatches are useful.
+        Follow docs/REPRODUCING.md. Attach JSON reports only, never model weights, constants,
+        credentials, private prompts, machine paths or request traces. The report does not
+        authenticate its author or prove universal correctness.
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Verification scope
+      options:
+        - CPU arithmetic self-check (not model inference)
+        - Exact-mode standalone model
+        - Int8-mode standalone model
+        - vLLM plugin (separate existing suite)
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Source commit or release tag
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Hardware and runtime
+      description: CPU/GPU model, OS, Python, torch, CUDA/Triton when applicable. No hostnames or credentials.
+    validations:
+      required: true
+  - type: textarea
+    id: commands
+    attributes:
+      label: Commands and exit codes
+      description: Remove personal paths; include record and compare commands if used.
+    validations:
+      required: true
+  - type: textarea
+    id: reports
+    attributes:
+      label: Reports and outcome
+      description: Attach generated JSON, reference report/source and comparison output. Explain mismatches as well as matches.
+    validations:
+      required: true

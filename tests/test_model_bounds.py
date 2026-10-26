@@ -73,3 +73,10 @@ def test_checked_epilogue_against_independent_big_integer_oracle():
         assert bool(bad) == (abs(want) >= 1 << 62)
         if not bool(bad):
             assert y[0, i].item() == want
+
+
+@pytest.mark.parametrize("value", [-1, 1])
+def test_nonzero_unsupported_positive_shift_fails_closed(value):
+    c, rs, d, g, sh = parts(value, 31)
+    _, flag = epilogue(c, rs[0], d, g, sh, FR, checked=True)
+    assert bool(flag)

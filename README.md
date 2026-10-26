@@ -6,6 +6,22 @@ without the KV cache. The int8 mode also keeps every bit inside a busy vLLM serv
 
 Personal research project by Yu (Audrey) Mao. Homepage: https://mynotwo.github.io/
 
+## Verify it yourself
+
+Start on a CPU without model weights:
+
+```bash
+python -m pip install -e '.[test]'
+python -m bitexact.repro self-check --out arithmetic.json
+```
+
+This checks eight production arithmetic fixtures against independent Python references;
+it is not a model-inference result. [Reproduction guide](docs/REPRODUCING.md) explains
+actual model recording, one-command comparison with a reference, report scope and exit codes.
+[Share a device report](https://github.com/mynotwo/bitexact-llm/issues/new?template=reproduction.yml)
+to contribute a match or a reproducible mismatch. No weights, constants or private prompts are needed
+in a public submission.
+
 ## What it is
 
 `bitexact` runs Llama-3.2-1B in two integer modes:
@@ -61,11 +77,11 @@ These guards retain the preceding GEMM and residual-accumulation input contracts
 that every arithmetic operation is overflow-free. The historical model runs below predate these guards;
 the added CPU regressions do not re-establish whole-model or CUDA identity for the changed source.
 
-## Guarantees and their scope
+## Reported guarantees and their scope
 
-- Given the same constants file (identified by its SHA-256), exact mode gives identical int64 logits and
-  identical sampled tokens across the devices, software versions and execution modes in the table below.
-  This was tested on those configurations only, not proven for all hardware.
+- Historical runs with the same constants file (identified by its SHA-256) produced identical int64
+  logits and sampled tokens across the configurations listed below. Those runs predate the new bound
+  guards; the changed source still needs a fresh model/CUDA reproduction. They do not prove all hardware.
 - exact mode uses the original bf16 weights for every linear layer, including the tied lm_head (checked
   bit for bit over all 1,235,746,816 elements). **The one exception is the input embedding**: it is stored
   at the residual stream's fixed point (int32, unit 2^-24), so each entry is rounded once to 2^-24.
@@ -147,7 +163,7 @@ sum over the bf16 weights, all three GEMM paths). The `slow` tests check that on
 logits alone, in a padded batch, through the KV cache, with compiled stages, with cuBLAS and on the CPU.
 Without constants files they can build a 2-layer model from `BITEXACT_MODEL=PATH/Llama-3.2-1B`.
 
-## Verified results (exact mode)
+## Historical model results (exact mode, before the new guards)
 
 ### Bit identity
 
