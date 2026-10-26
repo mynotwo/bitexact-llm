@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+# All metrics of the report from the raw files in $O (env.sh sets PY, BF16, DATA, C, O).
 . /data00/tmp/audreymao/rl_mismatch/env.sh
 X=""; [ -f $O/g_bx_h100_bs16.json ] && X="bx_h100_standalone_bs16=$O/b0_bx.json,$O/g_bx_h100_bs16.json"
 $PY $C/analyze.py --tokenizer $BF16 --data $DATA --out $O/metrics.json \
@@ -7,6 +9,7 @@ $PY $C/analyze.py --tokenizer $BF16 --data $DATA --out $O/metrics.json \
    hf_bf16bs8_vs_fp32=$O/s_hf_bf16_bs8.json,$O/s_hf_fp32_bs8.json,$O/r0_bf16.json \
    bx_plugin_vs_h800_bs8=$O/b0_bx.json,$O/s_bx_h800_bs8.json bx_plugin_vs_h800_bs32=$O/b0_bx.json,$O/s_bx_h800_bs32.json \
    bx_plugin_vs_h100_bs16=$O/b0_bx.json,$O/s_bx_h100_bs16.json bx_plugin_vs_cpu=$O/b0_bx.json,$O/s_bx_cpu.json \
+   bx_plugin_vs_h100_np2=$O/b0_bx.json,$O/s_bx_h100_np2.json bx_plugin_vs_cpu_np2=$O/b0_bx.json,$O/s_bx_cpu_np2.json \
  --replay vllm_repeat_same_cfg=$O/r0_bf16.json,$O/r0b_bf16_repeat.json vllm_shuffle_ms32=$O/r0_bf16.json,$O/r1_bf16_shuf32.json \
    vllm_ms8=$O/r0_bf16.json,$O/r2_bf16_seq8.json vllm_h100=$O/r0_bf16.json,$O/r3_bf16_h100.json \
    bx_plugin_shuffle_ms32=$O/b0_bx.json,$O/b1_bx_shuf32.json bx_plugin_h100=$O/b0_bx.json,$O/b2_bx_h100.json \
