@@ -129,7 +129,22 @@ def residual(q, rr, rc, rv, N):
     return B
 
 
-def epilogue(T, B, d, g, sh, FR):
-    """round((T * 2^d + B) * 2^(sh + g - d + FR)) per element: the linear output at FR bits."""
+def epilogue(T, B, d, g, sh, FR, checked=False):
+    """Round the linear output; optionally flag a lost shift or a result outside (-2^62, 2^62).
+
+    T/B/d retain combine's existing input contract. This checks the epilogue, not every preceding GEMM.
+    Positive shifts above 30 are unsupported by shift_round_hl and fail closed for nonzero inputs.
+    """
     H, L = combine(T, d, B)
-    return shift_round_hl(H, L, sh[:, None] + (g - d)[None, :] + FR)
+    p = sh[:, None] + (g - d)[None, :] + FR
+    y = shift_round_hl(H, L, p)
+    if not checked:
+        return y
+    # Check high words before a left shift can wrap back into an apparently small int64 result.
+    up_limit = torch.ones_like(p) << (31 - p.clamp(min=0, max=30))
+    small_limit = torch.ones_like(p) << (31 + (-p).clamp(min=1, max=31))
+    up_lost = (H >= up_limit) | (H < -up_limit) | ((p > 30) & ((H != 0) | (L != 0)))
+    small_lost = (H >= small_limit) | (H < -small_limit)
+    lost = torch.where(p >= 0, up_lost, (p > -32) & small_lost)
+    flag = (lost | (y <= -(1 << 62)) | (y >= 1 << 62)).any()
+    return y, flag

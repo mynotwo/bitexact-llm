@@ -1,10 +1,29 @@
 # BitExact LLM
 
-Bit-reproducible Llama inference with integer arithmetic. The same prompt, seed and model give the same
-logits, bit for bit, on an H800, an H100, an L20, an x86 CPU and an Apple M4 Pro CPU, at batch size 1 or 8, with or
-without the KV cache. The int8 mode also keeps every bit inside a busy vLLM server.
+An experimental Llama-3.2-1B inference engine built around integer arithmetic. It studies bit-identical
+logits and sampled tokens across devices, batch sizes and KV-cache schedules, with exact-bf16-weight
+and int8 modes and an int8 vLLM plugin. Historical model runs are documented below; the current
+reproduction preview adds a weight-free CPU entry point and stricter model reports.
 
-Personal research project by Yu (Audrey) Mao. Homepage: https://mynotwo.github.io/
+Personal research project by Yu (Audrey) Mao. [Technical article](https://mynotwo.github.io/blog/bitexact-inference/)
+· [CPU checks](https://github.com/mynotwo/bitexact-llm/actions/workflows/cpu.yml)
+· [Homepage](https://mynotwo.github.io/)
+
+## Verify it yourself
+
+Start on a CPU without model weights:
+
+```bash
+python -m pip install -e '.[test]'
+python -m bitexact.repro self-check --out arithmetic.json
+```
+
+This checks eight production arithmetic fixtures against independent Python references;
+it is not a model-inference result. [Reproduction guide](docs/REPRODUCING.md) explains
+actual model recording, one-command comparison with a reference, report scope and exit codes.
+[Share a device report](https://github.com/mynotwo/bitexact-llm/issues/new?template=reproduction.yml)
+to contribute a match or a reproducible mismatch. No weights, constants or private prompts are needed
+in a public submission.
 
 ## What it is
 
@@ -54,15 +73,18 @@ This describes exact mode. int8 mode follows the same scheme with int8 weights (
 two limbs, and direct exp / SiLU tables.
 
 Bounds (|x| < 2^40, KV values within 3 limbs, products < 2^62, ...) are checked on the device, and
-`model.check()` raises `OverflowError` if one was violated. Two gaps remain: the o_proj / down_proj outputs
-are checked only after they are added to the residual stream, and the final logits are not checked. No
-check fired in any of the runs below.
+`model.check()` raises `OverflowError` if a checked bound was violated. Exact-mode o_proj / down_proj
+outputs are now checked before residual addition; final logits are checked too. The linear epilogue
+also flags left-shift bit loss and rejects unsupported positive shifts above 30 for nonzero inputs.
+These guards retain the preceding GEMM and residual-accumulation input contracts; they are not a proof
+that every arithmetic operation is overflow-free. The historical model runs below predate these guards;
+the added CPU regressions do not re-establish whole-model or CUDA identity for the changed source.
 
-## Guarantees and their scope
+## Reported guarantees and their scope
 
-- Given the same constants file (identified by its SHA-256), exact mode gives identical int64 logits and
-  identical sampled tokens across the devices, software versions and execution modes in the table below.
-  This was tested on those configurations only, not proven for all hardware.
+- Historical runs with the same constants file (identified by its SHA-256) produced identical int64
+  logits and sampled tokens across the configurations listed below. Those runs predate the new bound
+  guards; the changed source still needs a fresh model/CUDA reproduction. They do not prove all hardware.
 - exact mode uses the original bf16 weights for every linear layer, including the tied lm_head (checked
   bit for bit over all 1,235,746,816 elements). **The one exception is the input embedding**: it is stored
   at the residual stream's fixed point (int32, unit 2^-24), so each entry is rounded once to 2^-24.
@@ -144,7 +166,7 @@ sum over the bf16 weights, all three GEMM paths). The `slow` tests check that on
 logits alone, in a padded batch, through the KV cache, with compiled stages, with cuBLAS and on the CPU.
 Without constants files they can build a 2-layer model from `BITEXACT_MODEL=PATH/Llama-3.2-1B`.
 
-## Verified results (exact mode)
+## Historical model results (exact mode, before the new guards)
 
 ### Bit identity
 
