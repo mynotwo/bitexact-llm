@@ -1,7 +1,7 @@
 """Metrics for the RL mismatch experiment (definitions fixed in the PLAN of the report).
 
   python analyze.py --tokenizer DIR --data GSM_DIR --out metrics.json \
-      --mismatch NAME=SAMPLER.json,SCORER.json ... --replay NAME=REF.json,RUN.json ...
+      --mismatch NAME=SAMPLER.json,SCORER.json[,ROLLOUT.json] ... --replay NAME=REF.json,RUN.json ...
 
 mismatch: per token d = logp_scorer - logp_sampler over the sampler's tokens (seeds present in both files).
 replay: token-for-token comparison of two rollouts of the same (prompt, seed) requests; flagged = reward 0
@@ -114,8 +114,11 @@ def main():
     res = {"mismatch": {}, "replay": {}}
     for spec in a.mismatch:
         name, files = spec.split("=")
-        f1, f2 = files.split(",")
+        f1, f2, *base = files.split(",")        # optional 3rd file: rollout giving tok / p for scorer-vs-scorer
         sa, sc = get(f1), get(f2)
+        if base:
+            b = get(base[0])
+            sa = {s: dict(v, tok=b[s]["tok"], p=b[s]["p"]) for s, v in sa.items()}
         sc = {s: dict(v, tok=sa[s]["tok"]) for s, v in sc.items() if s in sa}
         res["mismatch"][name] = mismatch(sa, sc)
         print(name, json.dumps(res["mismatch"][name]))
