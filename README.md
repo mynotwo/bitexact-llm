@@ -1,38 +1,62 @@
 # BitExact LLM
 
-An experimental Llama-3.2-1B inference engine built around integer arithmetic. It studies bit-identical
-logits and sampled tokens across devices, batch sizes and KV-cache schedules, with exact-bf16-weight
-and int8 modes and an int8 vLLM plugin. Historical model runs are documented below; the current
-reproduction preview adds a weight-free CPU entry point and stricter model reports.
+**What stays identical when the same model runs under different execution choices?**
 
-Personal research project by Yu (Audrey) Mao. [Technical article](https://mynotwo.github.io/blog/bitexact-inference/)
-· [CPU checks](https://github.com/mynotwo/bitexact-llm/actions/workflows/cpu.yml)
-· [Homepage](https://mynotwo.github.io/)
+BitExact is an experimental integer-arithmetic engine for Llama-3.2-1B. It makes
+logits and sampled-token identity explicit across device, batch and KV-cache
+experiments, with recorded constants and execution settings. Its purpose is
+reproducibility; the historical throughput measurements include substantial
+costs relative to stock serving engines.
 
-## Verify it yourself
+Personal research project by Yu (Audrey) Mao.
+[Technical article](https://mynotwo.github.io/blog/bitexact-inference/) ·
+[CPU checks](https://github.com/mynotwo/bitexact-llm/actions/workflows/cpu.yml) ·
+[Reproduction guide](docs/REPRODUCING.md) · [Homepage](https://mynotwo.github.io/)
 
-Start on a CPU without model weights:
+## Choose the claim you want to check
+
+| Entry | Requirements | What it checks |
+|---|---|---|
+| Arithmetic self-check | CPU, Python 3.11/3.12, declared dependencies; no model weights | Eight production arithmetic fixtures against independent Python references |
+| Model identity report | Your authorized Llama constants, adequate memory and the selected device | Logits hashes and sampled tokens under an explicit experiment contract |
+| Historical model/plugin runs | The recorded hardware, versions and configurations below | Results for those runs, before the current bound guards |
+
+The current source adds arithmetic guards and strict reproduction reports.
+Its CPU checks do not renew the historical model/CUDA results or certify every
+device. Model identity, numerical agreement with a float reference and throughput
+are separate measurements.
+
+## Start without model weights
+
+From a new checkout:
 
 ```bash
+git clone https://github.com/mynotwo/bitexact-llm.git
+cd bitexact-llm
+python -m venv .venv
+. .venv/bin/activate
 python -m pip install -e '.[test]'
 python -m bitexact.repro self-check --out arithmetic.json
 ```
 
-This checks eight production arithmetic fixtures against independent Python references;
-it is not a model-inference result. [Reproduction guide](docs/REPRODUCING.md) explains
-actual model recording, one-command comparison with a reference, report scope and exit codes.
+Expected: `PASS: 8 arithmetic fixtures`, plus a JSON transcript and fixture hash.
+Choose a new output filename for each run. No GPU, model download or Hugging Face
+account is needed; this is an arithmetic check, not a Llama inference result.
+
+For a model report, [build constants and record your device](docs/REPRODUCING.md#2-record-actual-model-identity),
+then compare compatible reports with `python -m bitexact.repro compare`.
 [Share a device report](https://github.com/mynotwo/bitexact-llm/issues/new?template=reproduction.yml)
-to contribute a match or a reproducible mismatch. No weights, constants or private prompts are needed
-in a public submission.
+with source revision, runtime, report JSON and reference provenance. A reproducible
+mismatch is useful evidence too; do not upload weights, constants or private prompts.
 
 ## What it is
 
 `bitexact` runs Llama-3.2-1B in two integer modes:
 
 - **exact** (`bitexact.exact`): the original bf16 weights, unchanged, multiplied exactly with int64
-  fixed-point activations. Its logits differ from HF fp32 by 5e-5 on average (bf16 differs by 3e-2).
+  fixed-point activations. Historical runs below report a 5e-5 mean logit difference from HF fp32 (bf16: 3e-2).
 - **int8** (`bitexact.int8`): int8 weights, a quantized integer model. It is faster than exact at batch 1
-  and in prefill; its logits differ from fp32 by about 9e-2, about 3x bf16's error.
+  and in prefill in the historical runs; reported logit differences from fp32 are about 9e-2, about 3x bf16's error.
 
 Both share the integer rules, the attention kernel and the sampler. An optional vLLM plugin
 (`bitexact.vllm_plugin`) serves the int8 mode through vLLM's scheduler, paged KV cache and prefix cache
@@ -80,7 +104,7 @@ These guards retain the preceding GEMM and residual-accumulation input contracts
 that every arithmetic operation is overflow-free. The historical model runs below predate these guards;
 the added CPU regressions do not re-establish whole-model or CUDA identity for the changed source.
 
-## Reported guarantees and their scope
+## Evidence and its scope
 
 - Historical runs with the same constants file (identified by its SHA-256) produced identical int64
   logits and sampled tokens across the configurations listed below. Those runs predate the new bound
@@ -167,6 +191,9 @@ logits alone, in a padded batch, through the KV cache, with compiled stages, wit
 Without constants files they can build a 2-layer model from `BITEXACT_MODEL=PATH/Llama-3.2-1B`.
 
 ## Historical model results (exact mode, before the new guards)
+
+<details>
+<summary>Recorded identity, accuracy, throughput and plugin experiments</summary>
 
 ### Bit identity
 
@@ -339,6 +366,8 @@ Plugin limitations:
 - Cross-GPU tests covered H100 and H800 only (both sm90).
 - The attention kernel is memory-bound on long context: each key is read twice (once for the maximum, once for
   the weighted sums), and each score uses nine int8 limb products.
+
+</details>
 
 ## Limitations
 
