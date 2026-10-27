@@ -340,6 +340,14 @@ Plugin limitations:
 - The attention kernel is memory-bound on long context: each key is read twice (once for the maximum, once for
   the weighted sums), and each score uses nine int8 limb products.
 
+### RL rollouts and failure replay
+
+[experiments/rl_mismatch](experiments/rl_mismatch/README.md) measures sampler-vs-trainer log-prob mismatch
+in a GRPO-style setup (Llama-3.2-1B, GSM8K, 1,024 rollouts). Stock vLLM bf16 vs HF bf16 differ on 99.99% of
+token log-probs, and only 13–17% of grader-flagged failures replay token for token; with the plugin and the
+standalone integer engine the difference is exactly zero and 1,007/1,007 flagged failures replay on H800, H100
+and CPU. Inference only; no training was run.
+
 ## Limitations
 
 - One model: Llama-3.2-1B (hidden size 2048, 32 query / 8 KV heads, head dim 64). Shapes are constants in
