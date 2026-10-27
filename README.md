@@ -369,6 +369,14 @@ Plugin limitations:
 
 </details>
 
+### RL rollouts and failure replay
+
+[experiments/rl_mismatch](experiments/rl_mismatch/README.md) reruns grader-flagged RL failures (Llama-3.2-1B,
+GSM8K, 1,024 rollouts). With stock vLLM bf16 only 13–17% replay token for token on rerun (same config, new batch
+or new GPU), and sampler and trainer (HF bf16) differ on 99.99% of token log-probs. With the plugin and the
+standalone integer engine, 1,007/1,007 flagged failures replay on H800, H100 and CPU and the sampler–trainer
+difference is exactly zero. Inference only; no training was run.
+
 ## Limitations
 
 - One model: Llama-3.2-1B (hidden size 2048, 32 query / 8 KV heads, head dim 64). Shapes are constants in
