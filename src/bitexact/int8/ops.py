@@ -34,6 +34,18 @@ def quant_rows(z, nl):
     return rdiv(zs * qmax(nl), as_[:, None]), as_, sh
 
 
+def post_bound(w, m, fmsh, nl):
+    """Largest |t| = |rsh(acc * m_c, fmsh)| over every input of a linear layer (Python int).
+
+    The GEMM input q comes from quant_rows, so |q| <= qmax(nl) and |acc_c| <= qmax(nl) * sum_k |W_ck|
+    (exact integer product). rsh rounds half up and is monotone, and |rsh(x, s)| <= rsh(|x|, s), so
+    |t_c| <= rsh(qmax(nl) * l1_c * |m_c|, fmsh). Taken over all output channels c."""
+    l1 = w.long().abs().sum(1)
+    assert int(l1.max()) < 1 << 24 and int(m.abs().max()) < 1 << 36       # l1 * |m| < 2^60 in int64
+    a = qmax(nl) * int((l1 * m.abs()).max())
+    return (a + (1 << (fmsh - 1))) >> fmsh if fmsh > 0 else a << -fmsh
+
+
 def norm24(mant, e):
     """(mant, e) with value mant * 2^e -> same value with mant in [2^23, 2^24] (rounded)."""
     b = bitlen(mant) - 24

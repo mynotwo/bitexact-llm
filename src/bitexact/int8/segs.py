@@ -21,6 +21,13 @@ FQ, FV, FP = 14, 14, 20                                     # q / k, v, attentio
 NEG = -(1 << 62)
 
 
+def _amax(z):
+    """max |z| over the whole tensor, reduced per leading row first: the same integer as z.abs().amax(),
+    but Inductor then runs it across all rows in parallel (a direct global amax became a split reduction
+    on a handful of blocks that also computed the segment's output)."""
+    return z.abs().flatten(1).amax(1).amax()
+
+
 def pre_norm(x, gamma, nl):
     """RMSNorm + per-row quantization: x [M, D] -> q, and the row scale amax(x * gamma) / rms(x)."""
     r, shx = rms(x)
@@ -35,10 +42,11 @@ def pre_plain(x, nl):
     return q, mant, e
 
 
-def post(acc, m, fmsh, mant, e):
-    """acc * s_c / qmax * row scale at FR (fmsh = fm + 8 (nl - 1) - 24, a 0-d tensor)."""
+def post(acc, m, fmsh, mant, e, check=True):
+    """acc * s_c / qmax * row scale at FR (fmsh = fm + 8 (nl - 1) - 24, a 0-d tensor). check=False when
+    |t| < 2^38 holds for every input (ops.post_bound, checked once by IntLlama): flag is then None."""
     t = rsh(acc * m, fmsh)
-    flag = t.abs().amax() >= 1 << 38                       # t * mant < 2^62
+    flag = _amax(t) >= 1 << 38 if check else None    # t * mant < 2^62
     return rsh(t * mant[:, None], (24 - FR - e)[:, None]), flag
 
 
@@ -57,7 +65,7 @@ def qkv(y, c, s):
     v = rsh(y[..., D + HKV * HD:].reshape(B, T, HKV, HD), FR - FV)
     g = H // HKV
     qg = q.view(B, T, HKV, g, HD).permute(0, 2, 3, 1, 4).reshape(B * HKV, g * T, HD)
-    flag = (q.abs().amax() > LIM[3]) | (k.abs().amax() > LIM[3]) | (v.abs().amax() > LIM[3])
+    flag = (_amax(q) > LIM[3]) | (_amax(k) > LIM[3]) | (_amax(v) > LIM[3])
     return qg, k, v, flag
 
 
@@ -82,13 +90,13 @@ def attn_out(num, den, T, nl):
 def silu_mul(gu, lut, nl):
     g, u = gu[:, :FF], gu[:, FF:]
     sg = silu(g, lut)
-    flag = sg.abs().amax() * u.abs().amax() >= 1 << 62
+    flag = _amax(sg) * _amax(u) >= 1 << 62
     q, mant, e = pre_plain(rsh(sg * u, FR), nl)
     return q, mant, e, flag
 
 
 class Segs:
-    def __init__(self, nl, cuda, compiled):
+    def __init__(self, nl, cuda, compiled, post_check=True):
         # nl is a Python int closed over; dynamic=None keeps such ints static and only lets shapes vary.
         wrap = (lambda f: torch.compile(f, dynamic=None)) if compiled else (lambda f: f)
         lim = (lambda q: stack_limbs(q, nl)) if cuda else (lambda q: q)
@@ -99,8 +107,9 @@ class Segs:
 
         self.pre_norm = wrap(lambda x, gamma: with_limbs(pre_norm(x, gamma, nl)))
         self.pre_plain = wrap(lambda x: with_limbs(pre_plain(x, nl)))
-        self.post = wrap(lambda c, m, fmsh, mant, e: post(join(c, mant.shape[0]), m, fmsh, mant, e))
-        self.post_add = wrap(lambda c, m, fmsh, mant, e, x: _add(post(join(c, mant.shape[0]), m, fmsh, mant, e), x))
+        self.post = wrap(lambda c, m, fmsh, mant, e: post(join(c, mant.shape[0]), m, fmsh, mant, e, post_check))
+        self.post_add = wrap(lambda c, m, fmsh, mant, e, x: _add(post(join(c, mant.shape[0]), m, fmsh, mant, e,
+                                                                         post_check), x))
         self.qkv = wrap(qkv)
         self.softmax = wrap(softmax)
         self.attn_out = wrap(lambda num, den, T: with_limbs(attn_out(num, den, T, nl)))

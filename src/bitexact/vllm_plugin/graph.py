@@ -57,7 +57,7 @@ def decode_forward(m, kvs, ids, pos, slot, bt):
         q, k, v = pre(m, ly, x, pos)
         o = paged.decode_store_attend(m, q, k, v, pos, kvs[i], slot, bt)
         x = post(m, ly, o, x)
-    m._flag(x.abs().amax() >= 1 << 42)
+    m._flag(x.abs().amax(1).amax() >= 1 << 42)                # = x.abs().amax(), row-parallel
     return x
 
 
