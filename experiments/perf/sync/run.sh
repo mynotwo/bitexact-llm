@@ -73,6 +73,8 @@ run() { log=$1; to=$2; tree=$3; shift 3       # run LOG TIMEOUT_S TREE CMD...   
   echo "$(date +%T) end $(basename $log .log) rc=$rc $(grep -h '^RESULT\|passed\|failed' $log | tail -1 | cut -c1-220)"
   [ $rc = 0 ] || grep -h "Error\|error:" $log | tail -3 | cut -c1-220; }
 cmp() { echo "== $*" | tee -a $SUM; ( cd $S/repo && $PY tests/vllm/compare.py "$@" ) 2>&1 | tee -a $SUM; }
+xcmp() {   # baseline run vs branch run: drop vLLM's seed-0 warm-up rows (not targets) from the baseline side
+  grep -v '^0 ' $1.hash > $1.nowarm.hash; cp $1.json $1.nowarm.json; cmp $1.nowarm $2; }
 
 smoke() { D=$O/smoke; mkdir -p $D
   run $D/br_pytest.log 3600 repo env BITEXACT_INT8_CONST=$CONST $PY -m pytest -q tests/vllm/test_decode_paths.py \
@@ -90,8 +92,8 @@ smoke() { D=$O/smoke; mkdir -p $D
   grep -h "^SYNC\|^RESULT" $D/*_probe_*.log | cut -c1-260 | tee -a $SUM
   cmp $D/base_ref $D/repo_ref $D/repo_alone_vllmgraph $D/repo_busy_vllmgraph_s5 $D/base_alone_vllmgraph \
       $D/base_busy_vllmgraph_s5
-  cmp $D/base_alone_vllmgraph $D/repo_alone_vllmgraph
-  cmp $D/base_busy_vllmgraph_s5 $D/repo_busy_vllmgraph_s5; }
+  xcmp $D/base_alone_vllmgraph $D/repo_alone_vllmgraph
+  xcmp $D/base_busy_vllmgraph_s5 $D/repo_busy_vllmgraph_s5; }
 
 suite() { D=$O/suite; mkdir -p $D
   for t in base repo; do
@@ -104,7 +106,7 @@ suite() { D=$O/suite; mkdir -p $D
   done
   for j in ref alone_pc1 alone_pc0 busy_pc1_s0 busy_pc0_s1 busy_pc1_s2_b64 busy_pc1_s3_preempt busy_eager_s4 \
            busy_vllmgraph_s5 alone_vllmgraph long_ref long_alone long_busy long_busy_eager; do
-    ( cd $S/repo && $PY tests/vllm/compare.py $D/base_$j $D/repo_$j ) 2>&1 | sed "s|$D/||" | tee -a $SUM
+    xcmp $D/base_$j $D/repo_$j
   done; }
 
 bench() { D=$O/bench; mkdir -p $D
