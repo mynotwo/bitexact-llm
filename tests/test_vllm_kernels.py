@@ -44,3 +44,23 @@ def test_gpu_pcg_matches_numpy():
     keys += [(0, 0), (1, 0), (2**32 - 1, 7), (12, 47)]
     got = gpu_pcg.raw_rows(keys, "cuda").cpu()
     assert torch.equal(got, sampling.raw_rows(keys))
+
+
+def test_integer_sample_matches_rule():
+    """The plugin sampler (one temperature: whole batch; mixed: gathered groups) against bitexact.sampling per row."""
+    from bitexact import sampling
+    from bitexact.int8.consts import FR
+    from bitexact.llama import V, ln_table
+    from bitexact.vllm_plugin.sampler import integer_sample
+    g = torch.Generator(device="cuda").manual_seed(1)
+    li = torch.randint(-(1 << 20), 1 << 20, (6, V), device="cuda", generator=g)
+    li[:, 77] = li.max() + 1                                     # ties: the first argmax must win
+    li[:, 5] = li.max()
+    lnt = ln_table().cuda()
+    seeds, ts = [0, 3, 3, 1001, 7, 9], [0, 5, -2, 40, 1, 2]
+    for temps in ([(0, 1)] * 6, [(1, 1)] * 6, [(0, 1), (1, 1), (7, 10), (1, 1), (0, 1), (7, 10)]):
+        got = integer_sample(li, seeds, ts, temps, lnt).cpu()
+        for r, (tn, td) in enumerate(temps):
+            raw = sampling.raw_rows([(seeds[r], max(ts[r], 0))])
+            ref = sampling.sample(li[r:r + 1].cpu(), tn, td, None if tn == 0 else sampling.gumbel(raw, lnt.cpu(), FR))
+            assert int(got[r]) == int(ref[0]), (temps, r)

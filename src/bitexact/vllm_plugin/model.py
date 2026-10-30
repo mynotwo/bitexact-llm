@@ -68,6 +68,7 @@ class BitExactLlamaForCausalLM(nn.Module):
         self.sha = c["sha256"]
         log = os.environ.get("BITEXACT_HASH_LOG")
         self.plan_log = log and log[:-len(".hash")] + ".plan"    # batch layout per forward (plan_stats.py)
+        self.pending = []        # (event, pinned flag) of overflow checks not yet read (_check_late)
         del c
         # Attention layers only to get vLLM's KV cache: 8 KV heads x 128 bf16 = 8 x 64 int32 (K | V).
         self.attn = nn.ModuleList([
@@ -129,9 +130,24 @@ class BitExactLlamaForCausalLM(nn.Module):
         self.m._flag(x.abs().amax() >= 1 << 42)
         return x
 
+    def _check_late(self):
+        """The bound-violation flag without a host sync: its value is copied to pinned memory each step and
+        read once the copy is done (usually at the next step). A violation raises a step or two late; while
+        no bound is violated nothing changes. BITEXACT_HASH_LOG (test runs) keeps the immediate check."""
+        if self.plan_log:
+            return self.m.check()
+        while self.pending and self.pending[0][0].query():
+            if bool(self.pending.pop(0)[1]):
+                raise OverflowError("integer bound violated (int8/model.py)")
+        flag = torch.empty((), dtype=torch.bool, pin_memory=True)
+        flag.copy_(self.m.err, non_blocking=True)
+        ev = torch.cuda.Event()
+        ev.record()
+        self.pending.append((ev, flag))
+
     def compute_logits(self, hidden_states):
         li = self.m.logits(hidden_states.long())
-        self.m.check()
+        self._check_late()
         STASH.logits = li
         return li.float() * (2.0 ** -16)
 
