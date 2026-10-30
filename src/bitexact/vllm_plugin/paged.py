@@ -116,7 +116,10 @@ def _store(c, slot, k, v):
 def _attend(m, q, qpos, c, bt):
     """q [R, HKV, M, HD] (M = G * T, g-major), qpos [R, M]; keys read in place from the paged cache c
     through block-table rows bt [R, :] -> o = round(sum p v / sum p) at FR, [R, HKV, M, HD]."""
-    num, den = tri_paged.attend(q, qpos, c, bt, m.ptab)
+    return attn_div(*tri_paged.attend(q, qpos, c, bt, m.ptab))
+
+
+def attn_div(num, den):
     return rdiv(num << (FR - FV), den)
 
 
@@ -154,11 +157,12 @@ def mlp(m, ly, x):
 def decode_store_attend(m, q, k, v, pos, kv, slot, blocks):
     """All rows are single-token decodes, no host syncs (CUDA-graph safe): write K / V at slot, then attend.
     Kept out of torch.compile (the cache is a dtype view and must be written in place). Padding rows: slot 0
-    (vLLM's null block 0, never given to a request) and position 0."""
+    (vLLM's null block 0, never given to a request) and position 0. Returns (num, den): the caller applies
+    attn_div inside its compiled region."""
     c = kv_view(kv)
     bs = c.shape[2]
     c[slot // bs, :, slot % bs] = torch.cat([k, v], -1).to(torch.int32)
-    return _attend(m, q, pos.view(-1, 1).expand(-1, G), c, blocks)
+    return tri_paged.attend(q, pos.view(-1, 1).expand(-1, G), c, blocks, m.ptab)
 
 
 def attention(m, i, x, pos, kv, plan):

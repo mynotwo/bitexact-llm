@@ -25,8 +25,8 @@ def _pre(m, ly, x, pos):
     return paged._qkv(m, ly, x, pos)
 
 
-def _post(m, ly, o, x):
-    return paged.mlp(m, ly, paged._out(m, ly, o, x))
+def _post(m, ly, num, den, x):
+    return paged.mlp(m, ly, paged._out(m, ly, paged.attn_div(num, den), x))
 
 
 _FN = {}
@@ -55,8 +55,8 @@ def decode_forward(m, kvs, ids, pos, slot, bt):
     for i in range(m.L):
         ly = m.layers[i]
         q, k, v = pre(m, ly, x, pos)
-        o = paged.decode_store_attend(m, q, k, v, pos, kvs[i], slot, bt)
-        x = post(m, ly, o, x)
+        num, den = paged.decode_store_attend(m, q, k, v, pos, kvs[i], slot, bt)
+        x = post(m, ly, num, den, x)
     m._flag(x.abs().amax(1).amax() >= 1 << 42)                # = x.abs().amax(), row-parallel
     return x
 

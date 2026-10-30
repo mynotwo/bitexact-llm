@@ -5,7 +5,7 @@
 set -u
 LOG=$1; shift
 GPUS=${GPUS:-0 1 7}; TMO=${TMO:-1800}; MAXWAIT=${MAXWAIT:-14400}
-. /data41/audreymao/a17_vllm/env.sh
+P0=${PYTHONPATH:-}; . /data41/audreymao/a17_vllm/env.sh; export PYTHONPATH=$P0   # env.sh points PYTHONPATH elsewhere
 free_gpu() {
   for g in $GPUS; do
     case $g in 2|3|4|5|6) continue ;; esac
