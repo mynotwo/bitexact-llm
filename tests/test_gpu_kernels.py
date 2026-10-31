@@ -35,6 +35,19 @@ def test_int8_segments_compiled_equal():
             assert torch.equal(a, b)
 
 
+def test_int8_division_compiled_equal():
+    """rdiv32 / bitlen32 in Triton (float32 division and frexp as Inductor emits them) against the int64 rules."""
+    from test_int8_ops import rdiv_cases
+
+    from bitexact.int8.ops import bitlen32, rdiv32
+    from bitexact.intops import bitlen, rdiv
+    a, b = (t.cuda() for t in rdiv_cases(torch.Generator().manual_seed(6)))
+    assert torch.equal(torch.compile(rdiv32)(a, b), rdiv(a, b))
+    x = torch.randint(0, 1 << 62, (20000,), device="cuda") >> torch.randint(0, 62, (20000,), device="cuda")
+    x = torch.cat([x, (1 << torch.arange(1, 62, device="cuda")) - 1, 1 << torch.arange(0, 62, device="cuda")])
+    assert torch.equal(torch.compile(bitlen32)(x), bitlen(x))
+
+
 def test_exact_norm_compiled_equal():
     from bitexact.exact.segs import Segs
     g = torch.Generator(device="cuda").manual_seed(2)

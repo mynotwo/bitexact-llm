@@ -94,7 +94,7 @@ def _pcg_kernel(st_ptr, tab_ptr, out_ptr, n_out, BLOCK: tl.constexpr):
 def raw_from_state(st, device):
     """st int64 [n, 4] (seed_state) -> int64 [n, V] raw words on device."""
     tab = _tables(device)
-    st = st.to(device, non_blocking=True)
+    st = st.pin_memory().to(device, non_blocking=True)            # pinned: the copy never waits for the GPU
     out = torch.empty(st.shape[0], V, dtype=torch.long, device=device)
     if st.shape[0]:
         BLOCK = 1024

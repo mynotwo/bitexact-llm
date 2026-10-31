@@ -14,8 +14,13 @@ Integer sampling rule (bitexact.sampling):
          one). Same key, same noise, on any device and in any batch.
 top_k / top_p / min_p / penalties are not part of the integer rule (ignored by design).
 
+No host-device sync: rows map to request slots through vLLM's host copy of the batch (idx_mapping_np), and
+t comes from its host sequence lengths (seq_lens_upper_bound_np, exact without speculative decoding), so the
+step's tokens stay on the device and vLLM's async scheduling can overlap host work with the forward pass.
+
 Logit hashes: with BITEXACT_HASH_LOG=<file> every sampled row appends "seed t sha16 token" (sha16 =
-first 16 hex digits of SHA-256 over the int64 logits row), for invariance tests.
+first 16 hex digits of SHA-256 over the int64 logits row), for invariance tests. That mode also checks the
+host t against vLLM's device positions (a sync, test runs only).
 """
 
 import hashlib
@@ -59,12 +64,17 @@ def integer_sample(li, seeds, ts, temps, lnt):
     for r, tt in enumerate(temps):
         groups.setdefault(tt, []).append(r)
     for (tn, td), rows in groups.items():
-        idx = torch.tensor(rows, device=li.device)
+        whole = len(rows) == li.shape[0]                 # one temperature in the batch: no gather / scatter
+        idx = None if whole else torch.tensor(rows).pin_memory().to(li.device, non_blocking=True)
+        lg = li if whole else li[idx]
         if tn == 0:
-            out[idx] = first_argmax(li[idx])
-            continue
-        raw = gpu_pcg.raw_rows([(seeds[r], max(ts[r], 0)) for r in rows], li.device)
-        out[idx] = _noisy_guess(li[idx], raw, lnt, tn, td)
+            y = first_argmax(lg)
+        else:
+            raw = gpu_pcg.raw_rows([(seeds[r], max(ts[r], 0)) for r in rows], li.device)
+            y = _noisy_guess(lg, raw, lnt, tn, td)
+        if whole:
+            return y
+        out[idx] = y
     return out
 
 
@@ -92,13 +102,16 @@ class IntSampler(LogitsProcessor):
         if self.lnt is None:
             from bitexact.vllm_plugin.model import MODEL
             self.lnt = MODEL.m.ln
-        slots = ctx.expanded_idx_mapping.tolist()
-        pos = ctx.pos.tolist()
+        slots = ctx.idx_mapping_np                       # one logits row per request (no spec decoding)
+        assert len(slots) == li.shape[0], "logits rows != requests (speculative decoding is not supported)"
         plen = self.rs.prompt_len.np
-        ts = [pos[r] + 1 - int(plen[s]) for r, s in enumerate(slots)]
+        ts = [int(ctx.seq_lens_upper_bound_np[r]) - int(plen[s]) for r, s in enumerate(slots)]
         seeds = [self.seed[s] for s in slots]
         y = integer_sample(li, seeds, ts, [self.temp[s] for s in slots], self.lnt)
         if self.log:
+            pos = ctx.pos.tolist()
+            assert ctx.expanded_idx_mapping.tolist() == slots.tolist(), "host slots != device slots"
+            assert ts == [pos[r] + 1 - int(plen[s]) for r, s in enumerate(slots)], "host t != device t"
             self._log(li, seeds, ts, y)
         logits.fill_(float("-inf"))
         logits.scatter_(1, y[:, None], 0.0)

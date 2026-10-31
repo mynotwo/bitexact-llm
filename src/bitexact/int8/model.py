@@ -16,7 +16,7 @@ import torch
 
 from bitexact.bmm import bmm
 from bitexact.int8.consts import FR
-from bitexact.int8.ops import EXACT, imm
+from bitexact.int8.ops import EXACT, imm, post_bound
 from bitexact.int8.segs import Segs
 from bitexact.llama import HD, HKV, Cache, D, H
 
@@ -44,7 +44,10 @@ class IntLlama:
         self.exp, self.silu_t, self.cos, self.sin, self.ln = t("exp"), t("silu"), t("cos"), t("sin"), t("ln")
         self.err = torch.zeros((), dtype=torch.bool, device=device)
         self.sha = c.get("sha256")
-        self.sg = Segs(nl, self.dev.type == "cuda", compiled)
+        # |t| < 2^38 after every GEMM for any input (post_bound): then segs.post skips its run-time check.
+        lins = [ly[n] for ly in self.layers for n in ("wqkv", "wo", "wgu", "wd")] + [self.lm]
+        self.post_check = any(post_bound(w, m, int(f), nl) >= 1 << 38 for w, m, f in lins)
+        self.sg = Segs(nl, self.dev.type == "cuda", compiled, self.post_check)
         self._w64 = {}                                      # CPU: float64 copies of the int8 weights
 
     def _fmsh(self, fm):
@@ -52,7 +55,8 @@ class IntLlama:
 
     # ---- linear layers ----
     def _flag(self, cond):
-        self.err |= cond
+        if cond is not None:
+            self.err |= cond
 
     def _gemm(self, a, w):
         if a.is_cuda:
