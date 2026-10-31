@@ -338,14 +338,30 @@ short and long logits-hash files match).
 Throughput on one H800 (GPU empty before the run; 128 input and 128 output tokens per request, `max_num_seqs`
 = batch; the second of two identical generate calls is timed, so it includes prefill; `tests/vllm/bench.py`):
 
-| Configuration | Output tok/s, batch 32 |
-|---|---|
-| vLLM bf16, CUDA graphs (stock) | 15,881 |
-| integer plugin, greedy (T = 0), vLLM graphs | 4,490 |
-| integer plugin, T = 1 | 4,162 |
+| Configuration (output tok/s, T = 0) | Batch 1 | Batch 32 | Batch 128 |
+|---|---|---|---|
+| vLLM bf16, CUDA graphs (stock) | 604 | 15,409 | 32,521 |
+| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 210 | 7,449 | 34,941 |
+| integer plugin before the changes below | 225 | 4,438 | 8,454 |
+| integer plugin, current | 372 | 8,272 | 19,354 |
 
-The integer plugin runs at about 0.28x of stock vLLM bf16 at batch 32 (greedy). The project's goal is
-reproducibility, not speed parity: the numbers are reported as measured.
+Each cell is one timed run; the two plugin rows and the batch-invariant row ran on the same GPU in one
+session, the stock row in an earlier session. vLLM's batch-invariant mode is the fair deterministic baseline,
+but only with `TRITON_ATTN`: with the default FlashAttention backend its logits for a prompt run alone
+differed from the same prompt inside batches of 32 and 128 at 104 and 197 of 512 positions. It guarantees
+batch invariance on one GPU and software stack, not agreement across GPU types or CPUs.
+
+Two changes, both verified bit-identical (14/14 suite runs with 0 differing tokens or logits hashes, hash
+files byte-equal to the previous commit), raised plugin throughput 1.65x / 1.86x / 2.29x:
+
+- The sampler and logits path no longer synchronize the host with the GPU. GPU idle time per decode step
+  fell from 3.84 to 0.69 ms at batch 128. The overflow flag is read when each step's output is returned,
+  so an overflow in any step, including the last, still raises.
+- Integer elementwise work around the GEMMs got cheaper: the post-GEMM range check is proven at load time
+  instead of checked at run time, and quantize division uses a float32 estimate with an exact integer
+  correction. Elementwise time per step fell from 4.96 to 1.81 ms at batch 128.
+
+Measurements, profiles and scripts are in `experiments/perf/`.
 
 Long-context decode, one H800, plugin graph replay, S = 16,384 (`tests/vllm/longctx_step.py`, CUDA event median):
 
