@@ -42,4 +42,12 @@
 - Only T=0 throughput was measured for combo. At T=1 only token identity was checked (digests).
 - No profiler run on combo. The explanation in Conclusion 2 (the idle gap removal exposes the elementwise savings) is inferred from the two single-branch profiles and was **not verified** with a combo profile.
 - The BI + TRITON_ATTN comparison is a throughput reference only. That setting is batch-invariant on this GPU and vLLM version. It does not give the cross-hardware integer bit-identity of the plugin.
-- The caveats of the two component branches still apply (sampler-sync: the overflow flag is read a step or two late, and speculative decoding is rejected by an assert).
+- The caveats of the two component branches still apply (sampler-sync: speculative decoding is rejected by an assert). The late overflow-flag read is fixed in d87b9ce, see below.
+
+## Overflow flag in the last step (d87b9ce)
+
+- Problem: in 6abfa58 the flag was copied to pinned memory each step and read only when a later step polled its event, so the flags of the engine's last one or two steps were never read. `tests/vllm/test_overflow_check.py` (one request, max_tokens 4, flag forced on the device in the 4th and last compute_logits only) fails on 9ca5c51 with `DID NOT RAISE`.
+- Fix: compute_logits copies the sticky device flag `m.err` into one persistent pinned bool, and the plugin wraps vLLM's `AsyncOutput.get_output` to raise `OverflowError` when that bool is set. get_output already waits for the step's output copy, which is ordered after the flag copy on the main stream, so the check adds no host sync and runs before that step's tokens are returned. The test passes on d87b9ce (141, GPU 1).
+- Re-run on 141, GPU 0, 08:14–08:43 (`STAGES="suite bench"`, outputs `/data41/audreymao/speedup_20261030/combo/out_fix/`), d87b9ce against 48a60f7 in the same session:
+  - suite: both trees compare_exit 0 and compare_long_exit 0; 14/14 cross pairs token_seqs_diff 0, missing 0, logit_hash_diff 0, inconsistent_repeats 0; 14/14 hash files byte-identical to the baseline. The suite runs with BITEXACT_HASH_LOG, which keeps the blocking per-step check, so it covers bit-identity but not the new check; the bench and the test run the new path.
+  - bench, T=0, output tok/s: B=1 206.4 → 348.2 (1.69x), B=32 4,053.5 → 8,120.9 (2.00x), B=128 8,472.6 → 19,296.5 (2.28x). Combo before the fix measured 371.7 / 8,271.7 / 19,353.7 in the earlier session; the baseline of this session is 8% lower at B=1 and 9% lower at B=32, and the speedups over the same-session baseline are unchanged or higher.
