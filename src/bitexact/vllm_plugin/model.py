@@ -34,6 +34,24 @@ from bitexact.vllm_plugin.sampler import STASH
 MODEL = None             # the loaded model in this process (the sampler reads the ln table from it)
 
 
+def _check_on_output():
+    """Wraps vLLM's AsyncOutput.get_output (V2 model runner) to raise on the bound-violation flag. get_output
+    waits for the step's output copy, which is ordered after compute_logits' flag copy on the main stream, so
+    the flag covers that step without another sync (m.err is never cleared: a later copy only sets it sooner)."""
+    from vllm.v1.worker.gpu.async_utils import AsyncOutput
+    get = AsyncOutput.get_output
+    if getattr(get, "bitexact", False):
+        return
+
+    def get_output(self):
+        out = get(self)
+        if MODEL is not None and bool(MODEL.flag):
+            raise OverflowError("integer bound violated (int8/model.py)")
+        return out
+    get_output.bitexact = True
+    AsyncOutput.get_output = get_output
+
+
 def _extend_rope(c, model_dir, n):
     """The constants hold 2048 rows of integer cos / sin. For longer contexts rebuild n rows with the same
     rule (llama3 scaling, float64, rounded once) and check the first rows are bit-identical."""
@@ -68,7 +86,8 @@ class BitExactLlamaForCausalLM(nn.Module):
         self.sha = c["sha256"]
         log = os.environ.get("BITEXACT_HASH_LOG")
         self.plan_log = log and log[:-len(".hash")] + ".plan"    # batch layout per forward (plan_stats.py)
-        self.pending = []        # (event, pinned flag) of overflow checks not yet read (_check_late)
+        # host copy of the bound-violation flag, read as each step's output reaches the host (_check_on_output)
+        self.flag = torch.zeros((), dtype=torch.bool, device="cpu", pin_memory=torch.cuda.is_available())
         del c
         # Attention layers only to get vLLM's KV cache: 8 KV heads x 128 bf16 = 8 x 64 int32 (K | V).
         self.attn = nn.ModuleList([
@@ -78,6 +97,7 @@ class BitExactLlamaForCausalLM(nn.Module):
         self.layer0 = "model.layers.0.self_attn.attn"
         STASH.active = True
         MODEL = self
+        _check_on_output()
 
     def embed_input_ids(self, input_ids):
         return self.m.emb[input_ids].long()
@@ -131,19 +151,13 @@ class BitExactLlamaForCausalLM(nn.Module):
         return x
 
     def _check_late(self):
-        """The bound-violation flag without a host sync: its value is copied to pinned memory each step and
-        read once the copy is done (usually at the next step). A violation raises a step or two late; while
-        no bound is violated nothing changes. BITEXACT_HASH_LOG (test runs) keeps the immediate check."""
+        """The bound-violation flag without a host sync: m.err (sticky, ORed on the device) is copied to pinned
+        memory each step and read in that step's AsyncOutput.get_output (_check_on_output), after vLLM's own
+        wait for the step's outputs. So a violation raises before the step's tokens are returned, the last
+        step included. BITEXACT_HASH_LOG (test runs) keeps the immediate check."""
         if self.plan_log:
             return self.m.check()
-        while self.pending and self.pending[0][0].query():
-            if bool(self.pending.pop(0)[1]):
-                raise OverflowError("integer bound violated (int8/model.py)")
-        flag = torch.empty((), dtype=torch.bool, pin_memory=True)
-        flag.copy_(self.m.err, non_blocking=True)
-        ev = torch.cuda.Event()
-        ev.record()
-        self.pending.append((ev, flag))
+        self.flag.copy_(self.m.err, non_blocking=True)
 
     def compute_logits(self, hidden_states):
         li = self.m.logits(hidden_states.long())
