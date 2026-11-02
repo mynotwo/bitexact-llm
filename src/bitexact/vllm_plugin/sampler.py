@@ -36,6 +36,7 @@ from bitexact.sampling import gumbel, sample, temp_ratio
 
 class _Stash:
     logits = None            # int64 [rows, V] from the latest compute_logits
+    greedy = None            # int64 [rows], first argmax of each logits row (same compute_logits)
     active = False           # set when the integer model is loaded in this process
 
 
@@ -56,8 +57,9 @@ def _noisy_guess(li, raw, lnt, tn, td):
     return _NOISY(li, raw, lnt, tn, td)
 
 
-def integer_sample(li, seeds, ts, temps, lnt):
-    """li int64 [M, V]; per row seed, generated index t, (tn, td). Returns int64 [M] token ids."""
+def integer_sample(li, seeds, ts, temps, lnt, greedy=None):
+    """li int64 [M, V]; per row seed, generated index t, (tn, td). Returns int64 [M] token ids. greedy: the
+    first argmax of each row when already computed (tri_logits)."""
     from bitexact.vllm_plugin import gpu_pcg
     out = torch.empty(li.shape[0], dtype=torch.long, device=li.device)
     groups = {}
@@ -68,7 +70,7 @@ def integer_sample(li, seeds, ts, temps, lnt):
         idx = None if whole else torch.tensor(rows).pin_memory().to(li.device, non_blocking=True)
         lg = li if whole else li[idx]
         if tn == 0:
-            y = first_argmax(lg)
+            y = first_argmax(lg) if greedy is None else greedy if whole else greedy[idx]
         else:
             raw = gpu_pcg.raw_rows([(seeds[r], max(ts[r], 0)) for r in rows], li.device)
             y = _noisy_guess(lg, raw, lnt, tn, td)
@@ -107,7 +109,7 @@ class IntSampler(LogitsProcessor):
         plen = self.rs.prompt_len.np
         ts = [int(ctx.seq_lens_upper_bound_np[r]) - int(plen[s]) for r, s in enumerate(slots)]
         seeds = [self.seed[s] for s in slots]
-        y = integer_sample(li, seeds, ts, [self.temp[s] for s in slots], self.lnt)
+        y = integer_sample(li, seeds, ts, [self.temp[s] for s in slots], self.lnt, STASH.greedy)
         if self.log:
             pos = ctx.pos.tolist()
             assert ctx.expanded_idx_mapping.tolist() == slots.tolist(), "host slots != device slots"
