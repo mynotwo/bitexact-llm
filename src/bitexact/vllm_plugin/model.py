@@ -14,7 +14,8 @@ _captured_decode) or, with enforce_eager=True, the plugin's (graph.py, BITEXACT_
 
 Hidden states returned to vLLM are int64 at FR = 16 fractional bits. compute_logits returns the
 integer logits / 2^16 as float32 for vLLM's bookkeeping (logprobs are therefore approximate); the token
-itself is chosen from the exact integers by sampler.IntSampler.
+itself is chosen from the exact integers by sampler.IntSampler (the greedy one computed in the same pass as
+the float copy, tri_logits.py).
 """
 
 import os
@@ -28,7 +29,7 @@ from vllm.model_executor.layers.attention import Attention
 from bitexact.int8.consts import FT
 from bitexact.int8.model import IntLlama
 from bitexact.llama import rope_tables
-from bitexact.vllm_plugin import paged, tri_paged
+from bitexact.vllm_plugin import paged, tri_logits, tri_paged
 from bitexact.vllm_plugin.sampler import STASH
 
 MODEL = None             # the loaded model in this process (the sampler reads the ln table from it)
@@ -163,7 +164,11 @@ class BitExactLlamaForCausalLM(nn.Module):
         li = self.m.logits(hidden_states.long())
         self._check_late()
         STASH.logits = li
-        return li.float() * (2.0 ** -16)
+        if not li.is_cuda:
+            STASH.greedy = None
+            return li.float() * (2.0 ** -16)
+        f, STASH.greedy = tri_logits.argmax_float(li)          # same float bits, plus the greedy token
+        return f
 
     def load_weights(self, weights):
         for _ in weights:            # the integer constants were loaded in __init__

@@ -15,6 +15,7 @@ of weights and p.v are exact integer reductions over the valid keys only. So how
 q.k and p.v read K / V in place through the block table (tri_paged.py), no gathered copy.
 """
 
+import os
 from dataclasses import dataclass
 
 import torch
@@ -23,9 +24,10 @@ from bitexact.int8.consts import FR
 from bitexact.int8.segs import FV
 from bitexact.intops import rdiv
 from bitexact.llama import HD, HKV, H
-from bitexact.vllm_plugin import tri_paged
+from bitexact.vllm_plugin import tri_mlp, tri_paged
 
 G = H // HKV
+TRI_MLP = os.environ.get("BITEXACT_TRI_MLP", "1") == "1"
 
 
 @dataclass
@@ -146,9 +148,15 @@ def _out(m, ly, o, x):
 
 
 def mlp(m, ly, x):
-    """IntLlama.mlp for flattened rows x [N, D], with the layer's tensors passed in (ly)."""
-    gu = m.norm_linear(x, ly["gm"], ly["wgu"])
-    a8, mant, e, flag = m.sg.silu_mul(gu, m.silu_t)
+    """IntLlama.mlp for flattened rows x [N, D], with the layer's tensors passed in (ly). On CUDA with 2 limbs
+    the ops between the two GEMMs run as tri_mlp's kernels (same integers)."""
+    if TRI_MLP and x.is_cuda and m.nl == 2:
+        w, mw, fmsh = ly["wgu"]
+        a, mant, e = m.sg.pre_norm(x, ly["gm"])
+        a8, mant, e, flag = tri_mlp.silu_quant(m._gemm(a, w), mw, fmsh, mant, e, m.silu_t, m.post_check)
+    else:
+        gu = m.norm_linear(x, ly["gm"], ly["wgu"])
+        a8, mant, e, flag = m.sg.silu_mul(gu, m.silu_t)
     m._flag(flag)
     return m._linear((a8, mant, e), ly["wd"], x)
 

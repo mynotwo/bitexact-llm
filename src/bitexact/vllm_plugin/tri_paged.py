@@ -166,6 +166,130 @@ def _acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, den_p
     tl.atomic_add(den_ptr + pz * M + rm, den, mask=mok & any_k)
 
 
+# Decode (M <= BQ = 4 queries per request and KV head): the 3 limbs of the BQ queries are stacked as the rows
+# of one 16-row int8 operand (row i * BQ + g = limb i of query g, rows 3 * BQ.. zero), so q.K takes 3 tensor-core
+# dots (one per K limb) instead of 9 with 12 of 16 rows padding; p.V likewise. Per dot entry |sum| <= DH * 2^14
+# (q.K) or keys * 2^14 (p.V, < 2^31 for the asserted < 43690 keys), so the int32 partials are exact; they are
+# combined as int64 sum_ij a_i b_j 2^(8 (i + j)), the same polynomial in the same int8 limbs as _limb_dot /
+# _limb_parts (int64 adds and shifts are exact mod 2^64 and the result is in range), hence the same integers.
+@triton.jit
+def _stack(x, BQ: tl.constexpr):
+    """[BQ, N] int32 (3 limbs) -> [4 BQ, N] int8, row i * BQ + g = limb i of x[g] (rows 3 BQ.. zero)."""
+    N: tl.constexpr = x.shape[1]
+    x = tl.reshape(tl.broadcast_to(x[None, :, :], (4, BQ, N)), (4 * BQ, N))
+    i = (tl.arange(0, 4 * BQ) // BQ)[:, None]
+    l0, x = _split(x)
+    l1, x = _split(x)
+    l2, x = _split(x)
+    return tl.where(i == 0, l0, tl.where(i == 1, l1, tl.where(i == 2, l2, 0))).to(tl.int8)
+
+
+@triton.jit
+def _unstack(c0, c1, c2, BQ: tl.constexpr):
+    """Stacked int32 dots with B limbs 0, 1, 2 ([4 BQ, N]) -> [BQ, N] int64 sum_ij c_j[i BQ + g] 2^(8 (i + j))."""
+    N: tl.constexpr = c0.shape[1]
+    t = c0.to(tl.int64) + (c1.to(tl.int64) << 8) + (c2.to(tl.int64) << 16)
+    t = t << (8 * (tl.arange(0, 4 * BQ) // BQ)).to(tl.int64)[:, None]
+    return tl.sum(tl.reshape(t, (4, BQ, N)), axis=0)
+
+
+@triton.jit
+def _dec_tile(q_ptr, qpos_ptr, bt_ptr, M, sqz, sqm, spz, sbt, NSPLIT,
+              NHKV: tl.constexpr, DH: tl.constexpr, BQ: tl.constexpr, BN: tl.constexpr):
+    pz = tl.program_id(1).to(tl.int64)
+    sp = tl.program_id(2)
+    r = pz // NHKV
+    rm = tl.arange(0, BQ)
+    rd = tl.arange(0, DH)
+    mok = rm < M
+    qpos = tl.load(qpos_ptr + r * spz + rm, mask=mok, other=-1).to(tl.int64)
+    rq = tl.load(q_ptr + pz * sqz + rm[:, None] * sqm + rd[None, :], mask=mok[:, None], other=0).to(tl.int32)
+    kend = tl.max(qpos, axis=0) + 1
+    chunk = tl.cdiv(tl.cdiv(kend, NSPLIT), BN) * BN
+    lo = sp * chunk
+    hi = tl.minimum(lo + chunk, kend)
+    return pz, pz % NHKV, rm, rd, mok, qpos, _stack(rq, BQ), lo, hi, bt_ptr + r * sbt
+
+
+@triton.jit
+def _dec_scores(qs, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs,
+                BS: tl.constexpr, BQ: tl.constexpr, BN: tl.constexpr):
+    ks = k0 + tl.arange(0, BN)
+    kok = ks < hi
+    blk = tl.load(bt_ptr + ks // BS, mask=kok, other=0).to(tl.int64)
+    off = blk * sc_nb + (ks % BS) * sc_bs
+    kt = tl.load(cbase + off[None, :] + rd[:, None], mask=kok[None, :], other=0)  # [DH, BN]
+    b0, kt = _split(kt)
+    b1, kt = _split(kt)
+    b2, kt = _split(kt)
+    raw = _unstack(tl.dot(qs, b0, out_dtype=tl.int32), tl.dot(qs, b1, out_dtype=tl.int32),
+                   tl.dot(qs, b2, out_dtype=tl.int32), BQ)
+    valid = (ks[None, :] <= qpos[:, None]) & kok[None, :]
+    return raw, valid, off, kok
+
+
+@triton.jit
+def _dec_max_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, mx_ptr, M, NSPLIT,
+                    sqz, sqm, spz, sc_nb, sc_h, sc_bs, sbt,
+                    BS: tl.constexpr, NHKV: tl.constexpr, DH: tl.constexpr, BQ: tl.constexpr, BN: tl.constexpr):
+    pz, h, rm, rd, mok, qpos, qs, lo, hi, bt_ptr = _dec_tile(
+        q_ptr, qpos_ptr, bt_ptr, M, sqz, sqm, spz, sbt, NSPLIT, NHKV, DH, BQ, BN)
+    cbase = c_ptr + h * sc_h
+    mx = tl.full((BQ,), NEG, dtype=tl.int64)
+    for k0 in tl.range(lo, hi, BN, num_stages=1):
+        raw, valid, off, kok = _dec_scores(qs, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, BQ, BN)
+        mx = tl.maximum(mx, tl.max(tl.where(valid, raw, NEG), axis=1))
+    tl.atomic_max(mx_ptr + pz * M + rm, mx, mask=mok & (hi > lo))
+
+
+@triton.jit
+def _dec_acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, den_ptr, M, NSPLIT,
+                    sqz, sqm, spz, sc_nb, sc_h, sc_bs, sbt, snz, snm,
+                    BS: tl.constexpr, NHKV: tl.constexpr, DH: tl.constexpr, ZSH: tl.constexpr,
+                    ZLO: tl.constexpr, BQ: tl.constexpr, BN: tl.constexpr, FUSED: tl.constexpr):
+    """FUSED (NSPLIT == 1): this program sees all keys of its rows, so it takes the row maxima itself in a
+    first sweep (the second sweep re-reads K, mostly from L2) and stores num / den; otherwise mx comes from
+    _dec_max_kernel and the per-split sums are added atomically."""
+    pz, h, rm, rd, mok, qpos, qs, lo, hi, bt_ptr = _dec_tile(
+        q_ptr, qpos_ptr, bt_ptr, M, sqz, sqm, spz, sbt, NSPLIT, NHKV, DH, BQ, BN)
+    cbase = c_ptr + h * sc_h
+    if FUSED:
+        mx = tl.full((BQ,), NEG, dtype=tl.int64)
+        for k0 in tl.range(lo, hi, BN, num_stages=1):
+            raw, valid, off, kok = _dec_scores(qs, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, BQ, BN)
+            mx = tl.maximum(mx, tl.max(tl.where(valid, raw, NEG), axis=1))
+    else:
+        mx = tl.load(mx_ptr + pz * M + rm, mask=mok, other=0)
+    e0 = tl.zeros((4 * BQ, DH), dtype=tl.int32)
+    e1 = tl.zeros((4 * BQ, DH), dtype=tl.int32)
+    e2 = tl.zeros((4 * BQ, DH), dtype=tl.int32)
+    den = tl.zeros((BQ,), dtype=tl.int64)
+    for k0 in tl.range(lo, hi, BN, num_stages=1):
+        raw, valid, off, kok = _dec_scores(qs, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, BQ, BN)
+        z = _rsh(tl.where(valid, raw, NEG) - mx[:, None], ZSH)          # <= 0
+        idx = (tl.maximum(z, ZLO - 1) - ZLO).to(tl.int32)               # table index, -1 = below table
+        ok = valid & (idx >= 0)
+        p = tl.load(ptab_ptr + tl.maximum(idx, 0), mask=ok, other=0)    # int32, = rsh(exp, FE - FP)
+        den += tl.sum(p, axis=1).to(tl.int64)
+        ps = _stack(p, BQ)
+        vt = tl.load(cbase + off[:, None] + DH + rd[None, :], mask=kok[:, None], other=0)  # [BN, DH]
+        v0, vt = _split(vt)
+        v1, vt = _split(vt)
+        v2, vt = _split(vt)
+        e0 += tl.dot(ps, v0, out_dtype=tl.int32)
+        e1 += tl.dot(ps, v1, out_dtype=tl.int32)
+        e2 += tl.dot(ps, v2, out_dtype=tl.int32)
+    num = _unstack(e0, e1, e2, BQ)
+    out = num_ptr + pz * snz + rm[:, None] * snm + rd[None, :]
+    if FUSED:                                    # sole writer of these rows (zeros when no key: hi == lo)
+        tl.store(out, num, mask=mok[:, None])
+        tl.store(den_ptr + pz * M + rm, den, mask=mok)
+    else:
+        any_k = hi > lo
+        tl.atomic_add(out, num, mask=mok[:, None] & any_k)
+        tl.atomic_add(den_ptr + pz * M + rm, den, mask=mok & any_k)
+
+
 def weight_table(lut):
     """The attention weight table rsh(exp_lut, FE - FP) as int32 (values <= 2^20). Built once when the
     model loads (it syncs with the host, so it must not run inside a compiled region or a graph capture)."""
@@ -178,7 +302,7 @@ SM_TARGET = 264        # programs to aim for (2 per SM on H100 / H800)
 
 
 @torch.compiler.disable          # a graph break for torch.compile callers: the launch picks nsplit from shapes
-def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=64, warps=4):
+def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=None, warps=4):
     """q int64 [R, HKV, M, HD] (|q| within 3 limbs), qpos int64 [R, M] (key s visible to query i iff
     s <= qpos[r, i]), cache int32 [nb, HKV, bs, 2 HD], bt [R, *] block-table rows, ptab = weight_table(exp table).
     Returns num int64 [R, HKV, M, HD], den int64 [R, HKV, M, 1].
@@ -192,7 +316,10 @@ def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=64, warps=4):
     assert nh == HKV and dh == HD and cache.stride(3) == 1 and bt.shape[1] * cache.shape[2] < 43690
     q = q.contiguous()
     qpos = qpos.contiguous()
+    if M <= DEC_BQ and bm is None:
+        return _attend_dec(q, qpos, cache, bt, ptab, nsplit, bn or 128, warps)
     BM = bm or (16 if M <= 16 else 64)
+    bn = bn or 64
     tiles = triton.cdiv(M, BM) * R * HKV
     if nsplit is None:
         nsplit = max(1, min(64, triton.cdiv(SM_TARGET, tiles)))
@@ -207,4 +334,33 @@ def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=64, warps=4):
     _acc_kernel[grid](q, qpos, cache, bt, ptab, mx, num, den, M, nsplit, *common, num.stride(1),
                       num.stride(2), BS=cache.shape[2], NHKV=HKV, DH=HD, ZSH=2 * FQ + 3 - FA,
                       ZLO=EXP_MIN << FA, BM=BM, BN=bn, num_warps=warps)
+    return num, den
+
+
+DEC_BQ = 4                       # decode: the G = 4 queries of one KV head, limbs stacked to 16 dot rows
+
+
+def _attend_dec(q, qpos, cache, bt, ptab, nsplit, bn, warps):
+    """attend for M <= DEC_BQ: one program per (request, KV head, key split), limb-stacked dots. With one
+    split a single kernel takes the maxima and the sums and stores them (no maxima pass, no atomics, no
+    zero fills); it is used once there are at least SM_TARGET / 2 programs (32 or more requests). Otherwise
+    nsplit = SM_TARGET // programs, so the splits fit in one wave."""
+    R, _, M, _ = q.shape
+    if nsplit is None:
+        tiles = R * HKV
+        nsplit = 1 if 2 * tiles >= SM_TARGET else min(64, SM_TARGET // tiles)
+    fused = nsplit == 1
+    new = torch.empty if fused else torch.zeros
+    num = new(R, HKV, M, HD, dtype=torch.long, device=q.device)
+    den = new(R, HKV, M, 1, dtype=torch.long, device=q.device)
+    mx = num if fused else torch.full((R, HKV, M), NEG.value, dtype=torch.long, device=q.device)
+    grid = (1, R * HKV, nsplit)
+    common = (q.stride(1), q.stride(2), qpos.stride(0), cache.stride(0), cache.stride(1), cache.stride(2),
+              bt.stride(0))
+    if not fused:
+        _dec_max_kernel[grid](q, qpos, cache, bt, mx, M, nsplit, *common,
+                              BS=cache.shape[2], NHKV=HKV, DH=HD, BQ=DEC_BQ, BN=bn, num_warps=warps)
+    _dec_acc_kernel[grid](q, qpos, cache, bt, ptab, mx, num, den, M, nsplit, *common, num.stride(1),
+                          num.stride(2), BS=cache.shape[2], NHKV=HKV, DH=HD, ZSH=2 * FQ + 3 - FA,
+                          ZLO=EXP_MIN << FA, BQ=DEC_BQ, BN=bn, FUSED=fused, num_warps=warps)
     return num, den
