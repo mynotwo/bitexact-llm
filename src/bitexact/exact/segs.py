@@ -16,7 +16,7 @@ import torch
 from bitexact.exact import ops
 from bitexact.exact.consts import FR, FT, LIM3
 from bitexact.exact.wmm import epilogue
-from bitexact.llama import FF, HD, HKV, D, H
+from bitexact.llama import HD, HKV, H
 
 FK, FV, FP = 17, 19, 22                                     # k, v, attention weights (fractional bits)
 
@@ -53,48 +53,54 @@ def quant(P, eps):
 
 
 def _rope_full(x, c, s):
-    x1, x2 = x[..., :HD // 2], x[..., HD // 2:]
+    hd = x.shape[-1]
+    x1, x2 = x[..., :hd // 2], x[..., hd // 2:]
     return torch.cat([x1 * c - x2 * s, x2 * c + x1 * s], -1)
 
 
-def lin_rope(C, rs, d, g, sh, pos, cos, sin, B, T):
-    """qkv linear + RoPE -> q at FR + FT [B, T, H, HD], k at FK, v at FV [B, T, HKV, HD], y (for the check)."""
+def lin_rope(C, rs, d, g, sh, pos, cos, sin, B, T, dm):
+    """qkv linear + RoPE -> q at FR + FT [B, T, H, HD], k at FK, v at FV [B, T, HKV, HD], y (for the check).
+    dm = (H, HKV, HD)."""
+    h, hkv, hd = dm
     y = lin_y(C, rs, d, g, sh).view(B, T, -1)
     c, s = cos[pos][:, :, None], sin[pos][:, :, None]
-    Pq = _rope_full(y[..., :D].reshape(B, T, H, HD), c, s)
-    k = ops.rshc(_rope_full(y[..., D:D + HKV * HD].reshape(B, T, HKV, HD), c, s), FR + FT - FK)
-    v = ops.rshc(y[..., D + HKV * HD:].reshape(B, T, HKV, HD), FR - FV)
+    Pq = _rope_full(y[..., :h * hd].reshape(B, T, h, hd), c, s)
+    k = ops.rshc(_rope_full(y[..., h * hd:(h + hkv) * hd].reshape(B, T, hkv, hd), c, s), FR + FT - FK)
+    v = ops.rshc(y[..., (h + hkv) * hd:].reshape(B, T, hkv, hd), FR - FV)
     return Pq, k, v, y
 
 
 def q_group(Pq, k, v, y, err):
-    """Quantize q per (token, head) and group by KV head: [B*HKV, 4T, HD] int32 and exponents [.., 1]."""
-    B, T = Pq.shape[0], Pq.shape[1]
+    """Quantize q per (token, head) and group by KV head: [B*HKV, gT, HD] int32 and exponents [.., 1]."""
+    B, T, h, hd = Pq.shape
+    hkv = k.shape[2]
     qi, shq = ops.quant(Pq, -(FR + FT))
-    g4 = H // HKV
-    qg = qi.view(B, T, HKV, g4, HD).permute(0, 2, 3, 1, 4).reshape(B * HKV, g4 * T, HD).to(torch.int32)
-    shg = shq.view(B, T, HKV, g4).permute(0, 2, 3, 1).reshape(B * HKV, g4 * T, 1)
+    g = h // hkv
+    qg = qi.view(B, T, hkv, g, hd).permute(0, 2, 3, 1, 4).reshape(B * hkv, g * T, hd).to(torch.int32)
+    shg = shq.view(B, T, hkv, g).permute(0, 2, 3, 1).reshape(B * hkv, g * T, 1)
     err = err | (y.abs().amax() >= 1 << 31) | (k.abs().amax() > LIM3) | (v.abs().amax() > LIM3) \
         | (shq.amax() > FK + 3 - ops.FZ)                       # rope products < 2^62, cache limbs
     return qg, shg, err
 
 
-def softmax(raw, qpos, shg, lut):
+def softmax(raw, qpos, shg, lut, l2e):
     ok = torch.arange(raw.shape[-1], device=raw.device) <= qpos
-    p, den = ops.softmax_w(raw, ok, shg, FK, lut, FP)
+    p, den = ops.softmax_w(raw, ok, shg, FK, lut, FP, l2e)
     return p.to(torch.int32), den
 
 
-def attn_div(num, den, T):
-    """num [B*HKV, 4T, HD] at FV + FP, den [B*HKV, 4T, 1] -> o at FR [B*T, D] (one rounding)."""
-    B, g = num.shape[0] // HKV, H // HKV
+def attn_div(num, den, T, hkv):
+    """num [B*HKV, gT, HD] at FV + FP, den [B*HKV, gT, 1] -> o at FR [B*T, H*HD] (one rounding)."""
+    Z, gT, hd = num.shape
+    B, g = Z // hkv, gT // T
     o = ops.div_round(num, FR - FV, den)
-    return o.view(B, HKV, g, T, HD).permute(0, 3, 1, 2, 4).reshape(B * T, D)
+    return o.view(B, hkv, g, T, hd).permute(0, 3, 1, 2, 4).reshape(B * T, hkv * g * hd)
 
 
 def lin_silu(C, rs, d, g, sh, lut):
     gu = lin_y(C, rs, d, g, sh)
-    P, _, ok = ops.silu_mul(gu[:, :FF], gu[:, FF:], lut)
+    ff = gu.shape[1] // 2
+    P, _, ok = ops.silu_mul(gu[:, :ff], gu[:, ff:], lut)
     return P, ok
 
 
@@ -108,7 +114,9 @@ STAGES = ("lin_y", "lin_add", "rms", "ndiv", "quant", "lin_rope", "q_group", "so
 
 
 class Segs:
-    def __init__(self, compiled=False):
+    def __init__(self, compiled=False, dm=(H, HKV, HD)):
+        self.dm = dm
+        self.l2e = ops.L2E28_HD[dm[2]]                           # KeyError: unsupported head_dim
         if compiled:
             import torch._dynamo
             torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, 64)
@@ -128,19 +136,19 @@ class Segs:
 
     def add_norm(self, C, rs, d, g, sh, x, gm, ge, err):
         x, flag = self.s.lin_add(C, rs, d, g, sh, x)
-        q, s, err = self.norm_q(x.view(-1, D), gm, ge, err | flag)
+        q, s, err = self.norm_q(x.view(-1, x.shape[-1]), gm, ge, err | flag)
         return x, q, s, err
 
     def qkv(self, C, rs, d, g, sh, pos, cos, sin, B, T, err):
-        Pq, k, v, y = self.s.lin_rope(C, rs, d, g, sh, pos, cos, sin, B, T)
+        Pq, k, v, y = self.s.lin_rope(C, rs, d, g, sh, pos, cos, sin, B, T, self.dm)
         qg, shg, err = self.s.q_group(Pq, k, v, y, err)
         return qg, shg, k, v, err
 
     def softmax(self, raw, qpos, shg, lut):
-        return self.s.softmax(raw, qpos, shg, lut)
+        return self.s.softmax(raw, qpos, shg, lut, self.l2e)
 
     def attn_out(self, num, den, T):
-        return self.s.quant(self.s.attn_div(num, den, T), -FR)
+        return self.s.quant(self.s.attn_div(num, den, T, self.dm[1]), -FR)
 
     def gu_silu(self, C, rs, d, g, sh, lut, err):
         P, gu = self.s.lin_silu(C, rs, d, g, sh, lut)

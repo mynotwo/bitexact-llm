@@ -1,4 +1,5 @@
-"""Exact-bf16 Llama-3.2-1B: original bf16 weights, integer activations, exact products.
+"""Exact-bf16 Llama (3.2-1B, 3.1-8B; geometry from the constants' config): original bf16 weights, integer
+activations, exact products.
 
 Fixed point (fractional bits): residual stream, linear outputs, attention output and logits at FR = 24;
 normalized activations at FN = 40; k at FK = 17, v at FV = 19 (KV cache int32, |.| <= 8355711, checked);
@@ -15,7 +16,7 @@ from bitexact.exact.consts import FR
 from bitexact.exact.segs import Segs
 from bitexact.exact.wmm import HAVE_TRITON, residual, wmm_cpu, wmm_cublas, wmm_triton
 from bitexact.intops import split_limbs
-from bitexact.llama import HD, HKV, Cache, D
+from bitexact.llama import Cache, dims
 
 
 def _pv_cpu(p, V):
@@ -28,7 +29,7 @@ def _pv_cpu(p, V):
 
 
 class Lin:
-    def __init__(self, c, name, device, gemm, ell, R=0):
+    def __init__(self, c, name, device, gemm, ell, R=0, cpu_lazy=False):
         t = lambda k: c[f"{name}.{k}"].to(device)
         self.limbs = t("limbs")
         self.N = self.limbs.shape[1]
@@ -47,9 +48,13 @@ class Lin:
             self.ec, self.ev = ec.to(device), ev.to(device)
         if self.gemm == "cublas":
             self.wcat = self.limbs.reshape(3 * self.N, -1)
-        if self.gemm == "cpu":
-            L = self.limbs.long()
-            self.w64 = (L[0] + (L[1] << 8) + (L[2] << 16)).double().t().contiguous()
+        self.lazy = cpu_lazy and self.gemm == "cpu"
+        if self.gemm == "cpu" and not self.lazy:
+            self.w64 = self._w64()
+
+    def _w64(self):
+        L = self.limbs.long()
+        return (L[0] + (L[1] << 8) + (L[2] << 16)).double().t().contiguous()
 
     def __call__(self, q):
         """(C, rs, d, g): exact dense products and the residual for segs._lin."""
@@ -58,18 +63,20 @@ class Lin:
         elif self.gemm == "cublas":
             C = wmm_cublas(q, self.wcat)
         else:
-            C = wmm_cpu(q, self.w64)
+            C = wmm_cpu(q, self._w64() if self.lazy else self.w64)
         rs = (q, self.ec, self.ev) if self.ell else (residual(q, self.rr, self.rc, self.rv, self.N),)
         return C, rs, self.d, self.g
 
 
 class ExactLlama:
     """gemm: "triton" (default; falls back to "cublas" without Triton) or "cublas" on CUDA; CPU tensors
-    always use the float64 path. compiled: torch.compile the element-wise stages (same integers)."""
+    always use the float64 path. compiled: torch.compile the element-wise stages (same integers).
+    cpu_lazy: on CPU, build each layer's float64 weight copy per call instead of keeping all of them
+    (8 bytes per weight; needed for Llama-3.1-8B on a 48 GB machine; same integers, slower)."""
 
     FR = FR
 
-    def __init__(self, c, device, n_layers=None, gemm="triton", compiled=False):
+    def __init__(self, c, device, n_layers=None, gemm="triton", compiled=False, cpu_lazy=False):
         self.dev = torch.device(device)
         if gemm == "triton" and not HAVE_TRITON:
             gemm = "cublas"
@@ -81,16 +88,18 @@ class ExactLlama:
                              for i in range(self.L))
         R = {n: rmax(n) for n in ("wqkv", "wo", "wgu", "wd")}
         for i in range(self.L):
-            ly = {n: Lin(c, f"{i}.{n}", device, gemm, compiled, R[n]) for n in ("wqkv", "wo", "wgu", "wd")}
+            ly = {n: Lin(c, f"{i}.{n}", device, gemm, compiled, R[n], cpu_lazy) for n in ("wqkv", "wo", "wgu", "wd")}
             for n in ("ga", "gm"):
                 ly[n] = (t(f"{i}.{n}.m"), t(f"{i}.{n}.e"))
             self.layers.append(ly)
         self.gf = (t("gf.m"), t("gf.e"))
-        self.lm = Lin(c, "lm", device, gemm, compiled)
+        self.lm = Lin(c, "lm", device, gemm, compiled, 0, cpu_lazy)
         self.cos, self.sin, self.exp2, self.ln = t("cos"), t("sin"), t("exp2"), t("ln")
         self.err = torch.zeros((), dtype=torch.bool, device=device)
         self.sha = c.get("sha256")
-        self.sg = Segs(compiled)
+        self.H, self.HKV, self.HD, self.D, _ = dims(c.get("cfg", {}))
+        assert self.emb.shape[1] == self.D, "constants config does not match the embedding width"
+        self.sg = Segs(compiled, (self.H, self.HKV, self.HD))
 
     def _layer(self, i, x, q, sh, pos, cache, S, err):
         """One decoder layer from x and its normalized input (q, sh); returns the next (x, q, sh, err)."""
@@ -99,11 +108,12 @@ class ExactLlama:
         qg, shg, k, v, err = self.sg.qkv(*ly["wqkv"](q), sh, pos, self.cos, self.sin, B, T, err)
         cache.write(i, k, v, pos)
         Kc, Vc = cache.k[i][:, :, :S], cache.v[i][:, :, :S]
-        raw = bmm(qg, Kc.transpose(-1, -2).reshape(B * HKV, HD, S))   # exact q.k
+        Z, hd = B * self.HKV, self.HD
+        raw = bmm(qg, Kc.transpose(-1, -2).reshape(Z, hd, S))         # exact q.k
         g = qg.shape[1] // T
-        qpos = pos[:, None, None, :].expand(B, HKV, g, T).reshape(B * HKV, g * T, 1)
+        qpos = pos[:, None, None, :].expand(B, self.HKV, g, T).reshape(Z, g * T, 1)
         p, den = self.sg.softmax(raw, qpos, shg, self.exp2)
-        Vr = Vc.reshape(B * HKV, S, HD)
+        Vr = Vc.reshape(Z, S, hd)
         num = bmm(p, Vr) if x.is_cuda else _pv_cpu(p, Vr)
         qo, sho = self.sg.attn_out(num, den, T)
         x, q, sh, err = self.sg.add_norm(*ly["wo"](qo), sho, x, *ly["gm"], err)
@@ -117,7 +127,7 @@ class ExactLlama:
         max(pos) + 1; a fixed S avoids the host sync, e.g. for CUDA graphs)."""
         x = self.emb[ids].long()
         S = int(pos.max()) + 1 if S is None else S
-        q, sh = self.sg.pre_norm(x.view(-1, D), *self.layers[0]["ga"])
+        q, sh = self.sg.pre_norm(x.view(-1, self.D), *self.layers[0]["ga"])
         err = self.err
         for i in range(self.L):
             x, q, sh, err = self._layer(i, x, q, sh, pos, cache, S, err)
@@ -138,7 +148,7 @@ class ExactLlama:
         return self.logits_q(*self.sg.pre_norm(x, *self.gf))
 
     def new_cache(self, B, L):
-        return Cache(self.L, B, L, self.dev)
+        return Cache(self.L, B, L, self.dev, self.HKV, self.HD)
 
     def check(self):
         if bool(self.err):
