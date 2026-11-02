@@ -1,0 +1,73 @@
+#!/bin/bash
+# 1-GPU Merlin worker for the 8B cross-hardware identity run (template; make_entry.sh embeds the code).
+# Downloads NousResearch/Meta-Llama-3.1-8B (shard SHA-256 checked), builds the exact constants in the job,
+# checks their internal SHA-256 (2f02ac8e...), runs bs1 / bs8 / incr / incr+compile, prints each JSON as
+# gzip+base64 between RESULT_B64_BEGIN <name> and RESULT_B64_END.
+set -uo pipefail
+(sleep 13800; echo WATCHDOG_TIMEOUT_230MIN; kill -9 0) &
+echo "JOB_START $(date -u +%FT%TZ) host=$(hostname)"
+nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total --format=csv 2>&1 || true
+nvidia-smi 2>&1 | grep -i "CUDA Version" || true
+free -g 2>&1 | head -2; nproc
+W=/opt/tiger/bx8; mkdir -p $W 2>/dev/null || W=$PWD/bx8; mkdir -p $W && cd $W || exit 1
+df -h $W | tail -1
+PY=$(command -v python3 || command -v python)
+PROXY=http://sys-proxy-rd-relay.byted.org:8118
+PIPI="--index-url https://mirrors.byted.org/pypi/simple/ --trusted-host mirrors.byted.org"
+$PY -m pip install -q $PIPI torch==2.4.1 triton==3.0.0 numpy safetensors "transformers==4.45.2" huggingface_hub 2>&1 | tail -2
+$PY -c "import torch;print(torch.__version__)" 2>&1 | grep -q '^2.4.1' || {
+  echo PIP_MIRROR_FAIL_TRY_PROXY
+  HTTPS_PROXY=$PROXY HTTP_PROXY=$PROXY $PY -m pip install -q torch==2.4.1 triton==3.0.0 numpy safetensors \
+    "transformers==4.45.2" huggingface_hub 2>&1 | tail -2; }
+$PY -c "import torch,triton,transformers;print('VERSIONS torch',torch.__version__,'cuda',torch.version.cuda,'triton',triton.__version__,'tf',transformers.__version__,'avail',torch.cuda.is_available())" 2>&1 | tail -1
+mkdir -p code && base64 -d > src.tgz <<'B64EOF'
+@CODE_B64@
+B64EOF
+tar xzf src.tgz -C code && echo "CODE_OK @COMMIT@ $(sha256sum src.tgz | cut -c1-16)" || { echo CODE_FAIL; exit 3; }
+export WDIR=$W
+fetch_weights() {
+$PY - <<'PY' 2>&1 | tail -6
+import os
+from huggingface_hub import hf_hub_download
+W = os.environ["WDIR"]; dst = W + "/model"; os.makedirs(dst, exist_ok=True)
+files = ["config.json", "model.safetensors.index.json"] + [f"model-0000{i}-of-00004.safetensors" for i in range(1, 5)]
+for ep in ["https://hf-mirror.com", "https://huggingface.co"]:
+    try:
+        for f in files:
+            p = hf_hub_download("NousResearch/Meta-Llama-3.1-8B", f, cache_dir=W + "/hf", endpoint=ep)
+            if not os.path.exists(dst + "/" + f):
+                os.symlink(p, dst + "/" + f)
+        print("WEIGHTS_OK", ep); break
+    except Exception as e:
+        print("WEIGHTS_FAIL", ep, type(e).__name__, str(e)[:160])
+PY
+}
+fetch_weights
+if [ ! -s $W/model/model-00004-of-00004.safetensors ]; then
+  echo WEIGHTS_RETRY_PROXY; rm -rf $W/model $W/hf
+  export HTTPS_PROXY=$PROXY HTTP_PROXY=$PROXY https_proxy=$PROXY http_proxy=$PROXY
+  fetch_weights
+  unset HTTPS_PROXY HTTP_PROXY https_proxy http_proxy
+fi
+cat > shards.sha256 <<'SHAEOF'
+f8b9704ab09cdeb097aa4a0a24bca96f906eec36bad63ab495bc21475058601b  model-00001-of-00004.safetensors
+c28b25e7541751056ee126627e007f8d4288319733285e9f7b17b9ff6eb313f0  model-00002-of-00004.safetensors
+d8e9504dd4e4a146d484c52a97584ec14dac92237c46b064934af67a85e7d383  model-00003-of-00004.safetensors
+e4486f35c040f683f7d790354f66c169c109eb9fa0954a4a35d7c458a108405d  model-00004-of-00004.safetensors
+SHAEOF
+(cd $W/model && sha256sum -c $W/shards.sha256) && echo SHARDS_OK || { echo SHARDS_MISMATCH; exit 4; }
+cd $W/code || exit 1
+echo "CONST_BUILD_START $(date -u +%FT%TZ)"
+PYTHONPATH=src $PY examples/build_constants.py --model $W/model --mode exact --out $W/const_8b.pt > $W/const_build.log 2>&1
+echo "CONST_BUILD_RC $? $(date -u +%FT%TZ)"; tail -5 $W/const_build.log | cut -c1-400
+grep -q '"sha256": "2f02ac8e43f08ac337b397d18fc740eb48dca27158c62ef742fbd4a9e729bfa9"' $W/const_build.log \
+  && echo CONST_SHA_OK || { echo CONST_SHA_MISMATCH; exit 5; }
+rm -rf $W/hf $W/model
+export TRITON_CACHE_DIR=$W/triton TORCHINDUCTOR_CACHE_DIR=$W/inductor
+R="$PY experiments/xhw_8b/run_ident.py --const $W/const_8b.pt --device cuda:0"
+for m in "bs1" "bs8" "incr" "incr --compiled"; do
+  n=@TAG@_$(echo $m | tr -d ' -' | sed 's/compiled/_compiled/'); echo "RUN $n $(date -u +%FT%TZ)"
+  $R --mode $m --out $W/$n.json 2>&1 | tail -3
+  if [ -s $W/$n.json ]; then echo "RESULT_B64_BEGIN $n"; gzip -c $W/$n.json | base64 -w 100; echo "RESULT_B64_END"; fi
+done
+echo "JOB_DONE $(date -u +%FT%TZ)"

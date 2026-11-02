@@ -16,6 +16,8 @@ FT2 = 26                      # exponent argument t of 2^-t
 FZ = 26                       # softmax z = score - max
 L2E28 = 387270501             # round(log2(e) * 2^28)
 L2E30 = 1549082005            # round(log2(e) * 2^30)
+# attention score scale 1 / sqrt(head_dim) = 2^-3 * c: the 2^-3 is a shift, c * log2(e) one rounded constant
+L2E28_HD = {64: L2E28, 128: 273841598}   # 128: round(log2(e) / sqrt(2) * 2^28)
 EPS60 = 11529215046068        # round(1e-5 * 2^60)
 NEG_BIG = -(1 << 20)
 
@@ -90,13 +92,15 @@ def quant(P, eps):
 def rms(x):
     """sqrt(mean(x^2) + 1e-5) of each row of x (int64 [M, D] at FR) as (r, er): r * 2^er, 2^30 <= r < 2^31."""
     D = x.shape[-1]
+    lg = D.bit_length() - 1
+    assert D == 1 << lg and lg <= 12, "row length a power of two <= 4096"
     amax = x.abs().amax(-1).clamp(min=1)
     shx = (bitlen(amax) - 25).clamp(min=-6)
     xs = rshc(x, shx[:, None])                                   # |xs| <= 2^25
-    S = (xs * xs).sum(-1)                                        # < 2^61 for D = 2048
+    S = (xs * xs).sum(-1)                                        # <= 2^(50 + lg) <= 2^62
     T = S + rshc(torch.full_like(S, EPS60 * D), 60 - 2 * (FR - shx))
-    m = (73 - bitlen(T)) // 2                                    # T * 2^2m / D in [2^60, 2^62)
-    s = 2 * m - 11
+    m = (62 + lg - bitlen(T)) // 2                               # T * 2^2m / D in [2^60, 2^62)
+    s = 2 * m - lg
     V = torch.where(s >= 0, T << s.clamp(min=0), T >> (-s).clamp(min=0))
     return isqrt(V), shx - FR - m
 
@@ -126,13 +130,14 @@ def silu_mul(g, u, lut):
     return s * u, -2 * FR, ok
 
 
-def softmax_w(raw, ok, sh, kbits, lut, fp):
+def softmax_w(raw, ok, sh, kbits, lut, fp, l2e=None):
     """Attention weights at fp bits from exact scores raw [.., S] (value raw * 2^(sh - kbits - 3), sh per
-    row [.., 1]); ok marks visible keys. Returns p (0 where masked) and the row sums."""
+    row [.., 1]); ok marks visible keys. l2e: log2(e) times the head_dim scale left after the 2^-3 shift
+    (L2E28_HD). Returns p (0 where masked) and the row sums."""
     NEG = -(1 << 62)
     raw = torch.where(ok, raw, torch.full_like(raw, NEG))
     z = raw.amax(-1, keepdim=True) - raw                         # >= 0
     zf = rshc(z, kbits + 3 - sh - FZ).clamp(max=48 << FZ)        # -score diff at FZ bits, <= 48
-    t = rshc(zf * L2E28, FZ + 28 - FT2)
+    t = rshc(zf * (L2E28 if l2e is None else l2e), FZ + 28 - FT2)
     p = torch.where(ok, exp2neg_lut(t, lut, fp), torch.zeros_like(t))
     return p, p.sum(-1, keepdim=True)

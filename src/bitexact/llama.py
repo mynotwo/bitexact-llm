@@ -1,4 +1,5 @@
-"""Llama-3.2-1B geometry, the integer KV cache, and checkpoint helpers shared by both engines."""
+"""Llama-3.2-1B geometry (defaults), the integer KV cache, and checkpoint helpers shared by both engines.
+The exact engine reads its geometry from the constants file (dims()), so it also runs Llama-3.1-8B."""
 
 import json
 import os
@@ -13,8 +14,8 @@ EOS, PAD = 128001, 128004
 class Cache:
     """Integer K and V per layer, int32 [B, HKV, L, HD] (values within 3 limbs, checked by the model)."""
 
-    def __init__(self, n_layers, B, L, device):
-        z = lambda: torch.zeros(B, HKV, L, HD, dtype=torch.int32, device=device)
+    def __init__(self, n_layers, B, L, device, hkv=HKV, hd=HD):
+        z = lambda: torch.zeros(B, hkv, L, hd, dtype=torch.int32, device=device)
         self.k = [z() for _ in range(n_layers)]
         self.v = [z() for _ in range(n_layers)]
 
@@ -25,12 +26,27 @@ class Cache:
         self.v[layer].permute(0, 2, 1, 3)[b, pos] = v.to(torch.int32)
 
 
+def dims(cfg):
+    """(H, HKV, HD, D, FF) of a HF Llama config dict; {} gives Llama-3.2-1B."""
+    d = cfg.get("hidden_size", D)
+    h = cfg.get("num_attention_heads", H)
+    return h, cfg.get("num_key_value_heads", HKV), cfg.get("head_dim") or d // h, d, cfg.get("intermediate_size", FF)
+
+
 def load_checkpoint(model_dir):
-    """(config dict, state dict) of a HF Llama directory with a single model.safetensors."""
+    """(config dict, state dict) of a HF Llama directory: model.safetensors or sharded with an index."""
     from safetensors.torch import load_file
     with open(os.path.join(model_dir, "config.json")) as f:
         cfg = json.load(f)
-    return cfg, load_file(os.path.join(model_dir, "model.safetensors"))
+    one = os.path.join(model_dir, "model.safetensors")
+    if os.path.exists(one):
+        return cfg, load_file(one)
+    with open(os.path.join(model_dir, "model.safetensors.index.json")) as f:
+        files = sorted(set(json.load(f)["weight_map"].values()))
+    sd = {}
+    for fn in files:
+        sd.update(load_file(os.path.join(model_dir, fn)))
+    return cfg, sd
 
 
 def rope_inv_freq(model_dir):
