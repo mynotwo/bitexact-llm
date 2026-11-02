@@ -9,7 +9,7 @@
 # On 141: STAGES="..." GPU=n bash $S/repo/experiments/perf/b128/run.sh go
 #
 # STAGES:
-#   pytest   GPU pytest of the repo tree (tests/ -m gpu files, test_decode_paths.py, test_overflow_check.py)
+#   pytest   GPU pytest of the repo tree (tests/ -m gpu files, test_decode_paths.py, test_overflow_check.py with the model)
 #   suite    tests/vllm/run_tests.sh (14 jobs) for base then repo; compare.py repo vs base_ref and cmp of the 14 hash files
 #   bench    ROUNDS rounds; per round and batch (1/32/128): T=0 base/repo/pre (order rotates per round), vLLM bf16 stock
 #            and VLLM_BATCH_INVARIANT=1 + TRITON_ATTN (bench_attn.py), then T=1 base/repo. Median per cell in SUMMARY.
@@ -72,7 +72,8 @@ JOBS="ref alone_pc1 alone_pc0 busy_pc1_s0 busy_pc0_s1 busy_pc1_s2_b64 busy_pc1_s
       alone_vllmgraph long_ref long_alone long_busy long_busy_eager"
 
 pytest() { D=$O/pytest; mkdir -p $D
-  run $D/pytest.log 3600 repo env BITEXACT_INT8_CONST=$CONST $PY -m pytest -q tests/test_gpu_kernels.py \
+  run $D/pytest.log 3600 repo env BITEXACT_INT8_CONST=$CONST BITEXACT_VLLM_MODEL=$MODEL $PY -m pytest -q -rs \
+    tests/test_gpu_kernels.py \
     tests/test_vllm_kernels.py tests/test_int8_ops.py tests/vllm/test_decode_paths.py tests/vllm/test_overflow_check.py
   tail -3 $D/pytest.log | tee -a $SUM; }
 
