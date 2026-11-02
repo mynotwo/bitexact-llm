@@ -13,6 +13,7 @@ import torch
 try:
     import triton
     import triton.language as tl
+    from triton.runtime.errors import OutOfResources
     HAVE_TRITON = True
 except ImportError:
     HAVE_TRITON = False
@@ -86,8 +87,22 @@ def bmm(a, b, na=3, nb=3):
     BN = 64 if N <= 64 else 128
     BK = 64
     grid = (triton.cdiv(M, BM), triton.cdiv(N, BN), Z)
+    key = (a.device.index, na, nb, BM, BN)
     with torch.cuda.device(a.device):
-        _bmm_kernel[grid](a, b, c, M, N, K, a.stride(0), a.stride(1), a.stride(2), b.stride(0), b.stride(1),
-                          b.stride(2), c.stride(0), c.stride(1), c.stride(2), NA=na, NB=nb, BM=BM, BN=BN,
-                          BK=BK, num_warps=4)
+        for ns in (_STAGES.get(key, 3), 2):
+            try:
+                _bmm_kernel[grid](a, b, c, M, N, K, a.stride(0), a.stride(1), a.stride(2), b.stride(0),
+                                  b.stride(1), b.stride(2), c.stride(0), c.stride(1), c.stride(2), NA=na, NB=nb,
+                                  BM=BM, BN=BN, BK=BK, num_warps=4, num_stages=ns)
+                break
+            except OutOfResources:
+                if ns == 2:
+                    raise
+                _STAGES[key] = 2
     return c
+
+
+# Pipeline depth per (device, tile): 3 stages need 110592 B of shared memory for head_dim 128 tiles (BM 64,
+# BN 128), above sm_89's 101376 (L20, L40, RTX 4090); there 2 stages are used. Stages only change how K
+# tiles are prefetched: every int32 limb sum is exact, so the product is the same integer.
+_STAGES = {}
