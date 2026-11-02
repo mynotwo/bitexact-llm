@@ -417,7 +417,7 @@ difference is exactly zero. Inference only; no training was run.
 ## Limitations
 
 - Two models: Llama-3.2-1B (both modes and the vLLM plugin) and Llama-3.1-8B (exact mode only). Shapes
-  are read from the constants file; other Llama sizes need new bound checks (`bounds.py`).
+  are read from the constants file; other Llama sizes need new bound checks.
 - Contexts up to 4,096 positions in exact mode and 2,048 in int8 mode (the RoPE table length; the vLLM
   plugin rebuilds longer tables at load time).
 - GPU results were tested on Hopper (H800, H100) and Ada (L20). V100 (sm70) is not supported because Triton
