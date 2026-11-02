@@ -45,6 +45,8 @@ common, logits rows that differ, greedy and sampled tokens that differ, and posi
 All CPU runs used 141's CPU (the H800 host). All of these have 0 differing logits rows and tokens against `h800_bs1.json`. A bs1 forward costs about
 the same for 3 or 128 positions of a text, so size CPU subsets by texts, not positions.
 
+Result files: `results/h800_141/` (reference: `h800_bs1.json`), `results/cpu_141/`, summary `results/compare_141.json`.
+
 ## Merlin (L20 and other GPUs)
 
 `merlin/make_entry.sh OUT.sh TAG` embeds this checkout's HEAD (`src`, `examples`, `experiments/xhw_8b`)
