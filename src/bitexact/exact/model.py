@@ -50,11 +50,13 @@ class Lin:
             self.wcat = self.limbs.reshape(3 * self.N, -1)
         self.lazy = cpu_lazy and self.gemm == "cpu"
         if self.gemm == "cpu" and not self.lazy:
-            self.w64 = self._w64()
+            L = self.limbs.long()
+            self.w64 = (L[0] + (L[1] << 8) + (L[2] << 16)).double().t().contiguous()
 
     def _w64(self):
-        L = self.limbs.long()
-        return (L[0] + (L[1] << 8) + (L[2] << 16)).double().t().contiguous()
+        """Same values as w64 (|W| < 2^23, exact in float64), built per call; transposed view, no copy."""
+        L = self.limbs
+        return L[0].double().add_(L[1].double(), alpha=256).add_(L[2].double(), alpha=65536).t()
 
     def __call__(self, q):
         """(C, rs, d, g): exact dense products and the residual for segs._lin."""
@@ -63,7 +65,7 @@ class Lin:
         elif self.gemm == "cublas":
             C = wmm_cublas(q, self.wcat)
         else:
-            C = wmm_cpu(q, self._w64() if self.lazy else self.w64)
+            C = wmm_cpu(q, self._w64() if self.lazy else self.w64)   # exact either way: sums < 2^53
         rs = (q, self.ec, self.ev) if self.ell else (residual(q, self.rr, self.rc, self.rv, self.N),)
         return C, rs, self.d, self.g
 

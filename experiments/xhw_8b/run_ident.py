@@ -155,9 +155,16 @@ def main():
            "processor": platform.processor(), "python": platform.python_version(),
            "threads": torch.get_num_threads(), "gemm": model.lm.gemm, "compiled": a.compiled,
            "cpu_lazy": a.cpu_lazy}
+    try:
+        import resource
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss          # KB on Linux, bytes on macOS
+        env["max_rss_gb"] = round(rss / (2 ** 30 if sys.platform == "darwin" else 2 ** 20), 2)
+    except ImportError:
+        pass
     if dev.type == "cuda":
         env["gpu"] = torch.cuda.get_device_name(dev)
         env["cuda"] = torch.version.cuda
+        env["max_mem_gb"] = round(torch.cuda.max_memory_allocated(dev) / 2 ** 30, 2)
     try:
         import triton
         env["triton"] = triton.__version__
