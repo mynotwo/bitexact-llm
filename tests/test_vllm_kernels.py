@@ -20,7 +20,8 @@ def test_fused_paged_attention_exact():
     nb, bs, HKV, HD = 96, 16, 8, 64
     for lim in (LIM[3], 1 << 13, 1 << 10):
         c = torch.randint(-lim, lim + 1, (nb, HKV, bs, 2 * HD), device="cuda", generator=g).to(torch.int32)
-        for R, M, P in [(3, 4, 600), (5, 4, 3000), (1, 1024, 2000), (2, 64, 600), (4, 20, 100)]:
+        for R, M, P in [(3, 4, 600), (5, 4, 3000), (6, 1, 900), (2, 3, 50), (1, 1024, 2000), (2, 64, 600),
+                        (4, 20, 100)]:
             bt = torch.randint(1, nb, (R, 200), device="cuda", generator=g).to(torch.int32)
             qpos = torch.randint(0, P, (R, M), device="cuda", generator=g)
             q = torch.randint(-lim, lim + 1, (R, HKV, M, HD), device="cuda", generator=g)
@@ -32,8 +33,9 @@ def test_fused_paged_attention_exact():
             p, den = softmax(raw, qpos.cpu()[:, None, :, None], lut.cpu())
             ref_num = torch.einsum("rhms,rhsd->rhmd", p, V)
             for ns in (None, 1, 5, 64):
-                num, den2 = tri_paged.attend(q, qpos, c, bt, tri_paged.weight_table(lut), nsplit=ns)
-                assert torch.equal(num.cpu(), ref_num) and torch.equal(den2.cpu(), den), (R, M, ns)
+                for bm in (None, 16):                   # M <= 4: limb-stacked decode kernels, then the general ones
+                    num, den2 = tri_paged.attend(q, qpos, c, bt, tri_paged.weight_table(lut), nsplit=ns, bm=bm)
+                    assert torch.equal(num.cpu(), ref_num) and torch.equal(den2.cpu(), den), (R, M, ns, bm)
 
 
 def test_gpu_pcg_matches_numpy():
