@@ -237,6 +237,19 @@ incremental.
 Constants files built from the same safetensors on two machines (torch 2.4 and torch 2.6) have the same
 SHA-256.
 
+Llama-3.1-8B in exact mode (hidden size 4096, head dim 128; one constants file, internal SHA-256
+`2f02ac8e…`, rebuilt and checked on every host): 8 texts, first 128 generated positions each (595 positions),
+teacher forcing in batch 1, batch 8 and incremental modes, compared against H800 batch 1 on the full int64
+logits row, the greedy token and the T = 0.7 sampled token. Details in `experiments/xhw_8b/RESULTS.md`.
+
+| Run | Environment | Positions per mode | Logits / tokens differ |
+|---|---|---|---|
+| H800 Triton, cuBLAS `_int_mm`, torch.compile | torch 2.4.1, Triton 3.0 | 595 | 0 / 0 |
+| H100 Triton, torch.compile | torch 2.6.0, Triton 3.2 | 595 | 0 / 0 |
+| x86 CPU (float64 limb GEMM), two hosts | torch 2.4.1 and 2.6.0 | 595 (incremental on one host: 113) | 0 / 0 |
+| Apple M4 Pro CPU | torch 2.15.0 | 595 (incremental: 198) | 0 / 0 |
+| NVIDIA L20 | torch 2.4.1, Triton 3.0 | not yet compared | |
+
 Not supported: V100 (sm70). The constants build gives the same SHA-256, but Triton 3.0 cannot compile the
 kernels for sm70 (`PassManager::run failed` in make_ttgir), so no logits were compared.
 
@@ -403,8 +416,8 @@ difference is exactly zero. Inference only; no training was run.
 
 ## Limitations
 
-- One model: Llama-3.2-1B (hidden size 2048, 32 query / 8 KV heads, head dim 64). Shapes are constants in
-  `bitexact/llama.py`; other Llama sizes need new bound checks.
+- Two models: Llama-3.2-1B (both modes and the vLLM plugin) and Llama-3.1-8B (exact mode only). Shapes
+  are read from the constants file; other Llama sizes need new bound checks (`bounds.py`).
 - Contexts up to 4,096 positions in exact mode and 2,048 in int8 mode (the RoPE table length; the vLLM
   plugin rebuilds longer tables at load time).
 - GPU results were tested on Hopper (H800, H100) and Ada (L20). V100 (sm70) is not supported because Triton
