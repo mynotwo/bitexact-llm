@@ -153,12 +153,22 @@ class IntSampler(LogitsProcessor):
         if self.lnt is None:
             from bitexact.vllm_plugin.model import MODEL
             self.lnt = MODEL.m.ln
-        slots = ctx.idx_mapping_np                       # one logits row per request (no spec decoding)
-        assert len(slots) == n, "logits rows != requests (speculative decoding is not supported)"
+        slots = ctx.idx_mapping_np
         plen = self.rs.prompt_len.np
-        ts = [int(ctx.seq_lens_upper_bound_np[r]) - int(plen[s]) for r, s in enumerate(slots)]
-        seeds = [self.seed[s] for s in slots]
-        temps = [self.temp[s] for s in slots]
+        if len(slots) == n:                              # one logits row per request
+            ts = [int(ctx.seq_lens_upper_bound_np[r]) - int(plen[s]) for r, s in enumerate(slots)]
+            seeds = [self.seed[s] for s in slots]
+            temps = [self.temp[s] for s in slots]
+        else:
+            # Speculative decoding: a request owns 1 + k rows (its last token and k drafts). The host does not
+            # know how many drafts were accepted last step, so the generated index of each row comes from the
+            # device positions (row at position p samples the token at p + 1), one sync per step. Row j of a
+            # request is sampled exactly as plain decoding samples that position (same seed, same t), so a draft
+            # is accepted iff it equals the token plain decoding would have produced there.
+            rslots = ctx.expanded_idx_mapping.tolist()
+            ts = [p + 1 - int(plen[s]) for p, s in zip(ctx.pos.tolist(), rslots)]
+            seeds = [self.seed[s] for s in rslots]
+            temps = [self.temp[s] for s in rslots]
         if head is None:
             y = integer_sample(li, seeds, ts, temps, self.lnt, STASH.greedy)
         else:                                            # one pass over the GEMM output; rows with tn = 0 are greedy
@@ -167,8 +177,9 @@ class IntSampler(LogitsProcessor):
         if self.log:
             li = head.logits() if li is None else li
             pos = ctx.pos.tolist()
-            assert ctx.expanded_idx_mapping.tolist() == slots.tolist(), "host slots != device slots"
-            assert ts == [pos[r] + 1 - int(plen[s]) for r, s in enumerate(slots)], "host t != device t"
+            if len(slots) == n:
+                assert ctx.expanded_idx_mapping.tolist() == slots.tolist(), "host slots != device slots"
+                assert ts == [pos[r] + 1 - int(plen[s]) for r, s in enumerate(slots)], "host t != device t"
             self._log(li, seeds, ts, y)
         if head is None or STASH.strict or STASH.greedy is None:
             logits.fill_(float("-inf"))
