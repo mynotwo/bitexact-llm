@@ -346,6 +346,7 @@ def weight_table(lut):
     return t.to(torch.int32).contiguous()
 
 
+DEC_PROGRAMS = 528     # decode programs to aim for (4 per SM on H100 / H800)
 SM_TARGET = 264        # programs to aim for (2 per SM on H100 / H800)
 
 
@@ -396,7 +397,7 @@ def _attend_dec(q, qpos, cache, bt, ptab, nsplit, bn, warps):
     R, _, M, _ = q.shape
     if nsplit is None:
         tiles = R * HKV
-        nsplit = 1 if 2 * tiles >= SM_TARGET else min(64, SM_TARGET // tiles)
+        nsplit = max(1, min(64, DEC_PROGRAMS // tiles, bt.shape[1] * cache.shape[2] // 1024))   # >= 1024 keys per split (a split costs ~30 us: 3 launches + zero fills)     # 4 programs per SM (p3_splitkv sweep: 2 per SM left 8-30% on the table)
     fused = nsplit == 1
     new = torch.empty if fused else torch.zeros
     num = new(R, HKV, M, HD, dtype=torch.long, device=q.device)
