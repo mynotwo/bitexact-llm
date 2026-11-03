@@ -101,9 +101,9 @@ suite() { D=$O/suite; mkdir -p $D
   done; }
 
 bench() { D=$O/bench; mkdir -p $D
-  for T in 0 1; do for b in 1 32 128; do for t in $TREES; do
-    run $D/${t}_b${b}_t$T.log 1800 $t $PY tests/vllm/bench.py --model $MODEL --batch $b --temp $T --tag ${t}_b${b}_t$T
-  done; done; done
+  for rep in 1 2 3; do for T in 0; do for b in 1 32 128; do for t in $TREES; do
+    run $D/${t}_b${b}_t${T}_r$rep.log 1800 $t $PY tests/vllm/bench.py --model $MODEL --batch $b --temp $T --tag ${t}_b${b}_t${T}_r$rep
+  done; done; done; done
   grep -h "^RESULT" $D/*.log | cut -c1-260 | tee -a $SUM; }
 
 longctx() { D=$O/longctx; mkdir -p $D
