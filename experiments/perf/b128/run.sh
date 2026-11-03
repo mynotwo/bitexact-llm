@@ -51,7 +51,7 @@ export VLLM_ENABLE_V1_MULTIPROCESSING=0
 STAGES=${STAGES:?set STAGES}; ROUNDS=${ROUNDS:-3}; MAXWAIT=${MAXWAIT:-21600}
 O=${O:-$S/out}; mkdir -p $O; SUM=$O/SUMMARY_${STAGES// /_}.txt
 : "${GPU:?set GPU}"
-case " 2 3 4 5 6 " in *" $GPU "*) echo "GPU $GPU belongs to others"; exit 2;; esac
+case " 4 5 6 " in *" $GPU "*) echo "GPU $GPU belongs to others"; exit 2;; esac
 echo "$(date +%T) GPU $GPU, stages: $STAGES, repo $(cat $S/repo/SYNCED_COMMIT), base $(cat $S/base/SYNCED_COMMIT)," \
   "pre $(cat $S/pre/SYNCED_COMMIT)" | tee -a $SUM
 
