@@ -15,10 +15,27 @@ import torch
 from bitexact.int8.consts import FA, FE, FG, FR, FT
 from bitexact.int8.ops import exp_of, norm24, quant_rows, rms, silu
 from bitexact.intops import LIM, join_limbs, rdiv, rsh, stack_limbs
-from bitexact.llama import FF, HD, HKV, H
+from bitexact.llama import HD, HKV, H
 
 FQ, FV, FP = 14, 14, 20                                     # q / k, v, attention weights (fractional bits)
 NEG = -(1 << 62)
+
+# Attention score scale 1 / sqrt(head_dim) applied to d = raw - max (raw at 2 FQ bits) to get z at FA bits.
+# head_dim 64: 2^-3, one shift. head_dim 128: 2^-3 * 2^-1/2, the 2^-1/2 as the integer SC128 = round(2^24 / sqrt 2)
+# (11863283.203...). d is first clamped to >= ZCLAMP (anything below it is under the exp table anyway, z < -32), so
+# |d * SC128| < 2^38 * 2^24 = 2^62. z = rsh(d * SC128, 24 + 2 FQ + 3 - FA).
+SC128 = 11863283
+ZCLAMP = -(1 << 38)
+
+
+def score_rule(hd):
+    """(mul, zsh): z = rsh(d, zsh) when mul is None, else rsh(max(d, ZCLAMP) * mul, zsh)."""
+    base = 2 * FQ + 3 - FA
+    if hd == 64:
+        return None, base
+    if hd == 128:
+        return SC128, base + 24
+    raise ValueError(f"unsupported head_dim {hd}")
 
 
 def _amax(z):
@@ -51,13 +68,15 @@ def post(acc, m, fmsh, mant, e, check=True):
 
 
 def _rope(x, c, s):
-    x1, x2 = x[..., :HD // 2], x[..., HD // 2:]
+    h = x.shape[-1] // 2
+    x1, x2 = x[..., :h], x[..., h:]
     sh = FT + FR - FQ
     return torch.cat([rsh(x1 * c - x2 * s, sh), rsh(x2 * c + x1 * s, sh)], -1)
 
 
-def qkv(y, c, s):
-    """y [B, T, 3072] at FR, c / s [B, T, 1, 32] -> grouped q [B*HKV, 4T, HD], k, v [B, T, HKV, HD], flag."""
+def qkv(y, c, s, dm=(H, HKV, HD)):
+    """y [B, T, (H + 2 HKV) HD] at FR, c / s [B, T, 1, HD / 2] -> grouped q [B*HKV, 4T, HD], k, v [B, T, HKV, HD], flag."""
+    H, HKV, HD = dm
     B, T = y.shape[0], y.shape[1]
     D = H * HD
     q = _rope(y[..., :D].reshape(B, T, H, HD), c, s)
@@ -69,17 +88,20 @@ def qkv(y, c, s):
     return qg, k, v, flag
 
 
-def softmax(raw, qpos, expt):
+def softmax(raw, qpos, expt, hd=HD):
     """raw [B, HKV, gT, S] q.k at 2 FQ, qpos [B, 1, gT, 1] -> weights p at FP (masked: 0), sums."""
     ok = torch.arange(raw.shape[-1], device=raw.device) <= qpos
     raw = torch.where(ok, raw, torch.full_like(raw, NEG))
-    z = rsh(raw - raw.amax(-1, keepdim=True), 2 * FQ + 3 - FA)          # / sqrt(64) = 2^-3
+    d = raw - raw.amax(-1, keepdim=True)
+    mul, zsh = score_rule(hd)                                          # / sqrt(hd)
+    z = rsh(d, zsh) if mul is None else rsh(d.clamp(min=ZCLAMP) * mul, zsh)
     p = torch.where(ok, rsh(exp_of(z.clamp(min=-(1 << 40)), expt), FE - FP), torch.zeros_like(z))
     return p, p.sum(-1, keepdim=True)
 
 
-def attn_out(num, den, T, nl):
+def attn_out(num, den, T, nl, dm=(H, HKV, HD)):
     """num [B, HKV, gT, HD], den [B, HKV, gT, 1] -> quantized o [B*T, H*HD] for o_proj."""
+    H, HKV, HD = dm
     B = num.shape[0]
     g = H // HKV
     o = rdiv(num << (FR - FV), den)
@@ -88,7 +110,8 @@ def attn_out(num, den, T, nl):
 
 
 def silu_mul(gu, lut, nl):
-    g, u = gu[:, :FF], gu[:, FF:]
+    ff = gu.shape[1] // 2
+    g, u = gu[:, :ff], gu[:, ff:]
     sg = silu(g, lut)
     flag = _amax(sg) * _amax(u) >= 1 << 62
     q, mant, e = pre_plain(rsh(sg * u, FR), nl)
@@ -96,7 +119,7 @@ def silu_mul(gu, lut, nl):
 
 
 class Segs:
-    def __init__(self, nl, cuda, compiled, post_check=True):
+    def __init__(self, nl, cuda, compiled, post_check=True, dm=(H, HKV, HD)):
         # nl is a Python int closed over; dynamic=None keeps such ints static and only lets shapes vary.
         wrap = (lambda f: torch.compile(f, dynamic=None)) if compiled else (lambda f: f)
         lim = (lambda q: stack_limbs(q, nl)) if cuda else (lambda q: q)
@@ -110,9 +133,9 @@ class Segs:
         self.post = wrap(lambda c, m, fmsh, mant, e: post(join(c, mant.shape[0]), m, fmsh, mant, e, post_check))
         self.post_add = wrap(lambda c, m, fmsh, mant, e, x: _add(post(join(c, mant.shape[0]), m, fmsh, mant, e,
                                                                          post_check), x))
-        self.qkv = wrap(qkv)
-        self.softmax = wrap(softmax)
-        self.attn_out = wrap(lambda num, den, T: with_limbs(attn_out(num, den, T, nl)))
+        self.qkv = wrap(lambda y, c, s: qkv(y, c, s, dm))
+        self.softmax = wrap(lambda raw, qpos, expt: softmax(raw, qpos, expt, dm[2]))
+        self.attn_out = wrap(lambda num, den, T: with_limbs(attn_out(num, den, T, nl, dm)))
         self.silu_mul = wrap(lambda gu, lut: with_limbs(silu_mul(gu, lut, nl)))
 
 

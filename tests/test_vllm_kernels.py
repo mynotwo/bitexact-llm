@@ -10,14 +10,15 @@ pytestmark = [pytest.mark.gpu, pytest.mark.skipif(not torch.cuda.is_available(),
 pytest.importorskip("vllm")
 
 
-def test_fused_paged_attention_exact():
+@pytest.mark.parametrize("HD", [64, 128])
+def test_fused_paged_attention_exact(HD):
     from bitexact.int8.consts import exp_table
     from bitexact.int8.segs import softmax
     from bitexact.intops import LIM
     from bitexact.vllm_plugin import tri_paged
     g = torch.Generator(device="cuda").manual_seed(0)
     lut = exp_table().cuda()
-    nb, bs, HKV, HD = 96, 16, 8, 64
+    nb, bs, HKV = 96, 16, 8
     for lim in (LIM[3], 1 << 13, 1 << 10):
         c = torch.randint(-lim, lim + 1, (nb, HKV, bs, 2 * HD), device="cuda", generator=g).to(torch.int32)
         for R, M, P in [(3, 4, 600), (5, 4, 3000), (6, 1, 900), (2, 3, 50), (1, 1024, 2000), (2, 64, 600),
@@ -30,7 +31,7 @@ def test_fused_paged_attention_exact():
             kv = c[bt.long()[:, s // bs], :, (s % bs)[None].expand(R, -1)].long()     # [R, S, HKV, 2 HD]
             K, V = kv[..., :HD].permute(0, 2, 1, 3).cpu(), kv[..., HD:].permute(0, 2, 1, 3).cpu()
             raw = torch.einsum("rhmd,rhsd->rhms", q.cpu(), K)                     # exact int64 on CPU
-            p, den = softmax(raw, qpos.cpu()[:, None, :, None], lut.cpu())
+            p, den = softmax(raw, qpos.cpu()[:, None, :, None], lut.cpu(), HD)
             ref_num = torch.einsum("rhms,rhsd->rhmd", p, V)
             for ns in (None, 1, 5, 64):
                 for bm in (None, 16):                   # M <= 4: limb-stacked decode kernels, then the general ones

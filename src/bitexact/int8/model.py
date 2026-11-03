@@ -19,7 +19,7 @@ from bitexact.int8.consts import FR
 from bitexact.int8.gemm_skinny import int_mm
 from bitexact.int8.ops import EXACT, imm, post_bound
 from bitexact.int8.segs import Segs
-from bitexact.llama import HD, HKV, Cache, D, H
+from bitexact.llama import Cache, dims
 
 
 class IntLlama:
@@ -30,6 +30,8 @@ class IntLlama:
 
     def __init__(self, c, device, nl=2, n_layers=None, compiled=False):
         self.dev = torch.device(device)
+        self.H, self.HKV, self.HD, self.D, self.FF = dims(c.get("cfg", {}))
+        assert c["emb"].shape[1] == self.D, "constants config does not match the embedding width"
         self.nl = nl
         self.L = c["n_layers"] if n_layers is None else n_layers
         t = lambda k: c[k].to(device)
@@ -48,7 +50,7 @@ class IntLlama:
         # |t| < 2^38 after every GEMM for any input (post_bound): then segs.post skips its run-time check.
         lins = [ly[n] for ly in self.layers for n in ("wqkv", "wo", "wgu", "wd")] + [self.lm]
         self.post_check = any(post_bound(w, m, int(f), nl) >= 1 << 38 for w, m, f in lins)
-        self.sg = Segs(nl, self.dev.type == "cuda", compiled, self.post_check)
+        self.sg = Segs(nl, self.dev.type == "cuda", compiled, self.post_check, (self.H, self.HKV, self.HD))
         self._w64 = {}                                      # CPU: float64 copies of the int8 weights
 
     def _fmsh(self, fm):
@@ -83,6 +85,7 @@ class IntLlama:
     def attention(self, i, x, pos, cache, S):
         B, T, _ = x.shape
         ly = self.layers[i]
+        H, HKV, HD, D = self.H, self.HKV, self.HD, self.D
         y = self.norm_linear(x.reshape(B * T, D), ly["ga"], ly["wqkv"]).view(B, T, -1)
         qg, k, v, flag = self.sg.qkv(y, self.cos[pos][:, :, None], self.sin[pos][:, :, None])
         self._flag(flag)
@@ -100,7 +103,7 @@ class IntLlama:
     def mlp(self, i, x):
         B, T, _ = x.shape
         ly = self.layers[i]
-        gu = self.norm_linear(x.reshape(B * T, D), ly["gm"], ly["wgu"])
+        gu = self.norm_linear(x.reshape(B * T, self.D), ly["gm"], ly["wgu"])
         a8, mant, e, flag = self.sg.silu_mul(gu, self.silu_t)
         self._flag(flag)
         return self._linear((a8, mant, e), ly["wd"], x)
@@ -123,7 +126,7 @@ class IntLlama:
         return self.norm_linear(x, self.gf, self.lm)
 
     def new_cache(self, B, L):
-        return Cache(self.L, B, L, self.dev)
+        return Cache(self.L, B, L, self.dev, self.HKV, self.HD)
 
     def check(self):
         if bool(self.err):

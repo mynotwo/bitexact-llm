@@ -23,10 +23,9 @@ import torch
 from bitexact.int8.consts import FR
 from bitexact.int8.segs import FV
 from bitexact.intops import rdiv
-from bitexact.llama import HD, HKV, H
+from bitexact.llama import H, HD
 from bitexact.vllm_plugin import tri_mlp, tri_paged
 
-G = H // HKV
 TRI_MLP = os.environ.get("BITEXACT_TRI_MLP", "1") == "1"
 
 
@@ -54,7 +53,7 @@ class PreGroup:
 GROUP_BYTES = 1 << 28           # cap on the padded int64 query tensor of one prefill group
 
 
-def _pre_groups(pre, positions, dev):
+def _pre_groups(pre, positions, dev, qdim=H * HD):
     """Prefill requests (shortest first) in groups padded to the group's longest query count."""
     groups, cur = [], []
 
@@ -73,14 +72,14 @@ def _pre_groups(pre, positions, dev):
         cur.clear()
 
     for t in sorted(pre, key=lambda t: t[2]):
-        if cur and (len(cur) + 1) * t[2] * H * HD * 8 > GROUP_BYTES:
+        if cur and (len(cur) + 1) * t[2] * qdim * 8 > GROUP_BYTES:
             flush()
         cur.append(t)
     flush()
     return groups
 
 
-def make_plan(meta, n_tokens, positions):
+def make_plan(meta, n_tokens, positions, qdim=H * HD):
     qsl = meta.query_start_loc.cpu().tolist()
     sl = meta.seq_lens.cpu().tolist()
     R = len(sl)
@@ -96,13 +95,12 @@ def make_plan(meta, n_tokens, positions):
     t = lambda xs: torch.tensor(xs, dtype=torch.long, device=dev)
     return Plan(n=min(n, n_tokens), slot=meta.slot_mapping[:n].long(), block_table=meta.block_table.long(),
                 dec_req=t([d[0] for d in dec]), dec_tok=t([d[1] for d in dec]),
-                pre=pre, pre_groups=_pre_groups(pre, positions, dev))
+                pre=pre, pre_groups=_pre_groups(pre, positions, dev, qdim))
 
 
 def kv_view(kv):
     """vLLM's bf16 cache view [nb, HKV, bs, 2 * 2 * HD] -> int8 limb planes [nb, HKV, bs, 8 * HD] (tri_paged)."""
-    assert kv.dim() == 4 and kv.shape[1] == HKV and kv.shape[3] == 4 * HD and kv.stride(3) == 1, \
-        (kv.shape, kv.stride())
+    assert kv.dim() == 4 and kv.shape[3] % 4 == 0 and kv.stride(3) == 1, (kv.shape, kv.stride())
     return kv.view(torch.int8)
 
 
@@ -124,6 +122,7 @@ def _prefill_group(m, q, c, plan, grp):
     """Several prefill requests in one kernel call, padded to the longest (Tm queries). Padding queries
     repeat the request's first query (results dropped)."""
     n, Tm = grp.idx.shape
+    HKV, G, HD = q.shape[1:]
     qt = q[grp.idx].permute(0, 2, 3, 1, 4).reshape(n, HKV, G * Tm, HD)
     qp = grp.pos.view(n, 1, Tm).expand(n, G, Tm).reshape(n, G * Tm)
     ot = _attend(m, qt, qp, c, plan.block_table[grp.req])
@@ -135,11 +134,11 @@ def _qkv(m, ly, x, pos):
     y = m.norm_linear(x, ly["ga"], ly["wqkv"]).view(N, 1, -1)
     qg, k, v, flag = m.sg.qkv(y, m.cos[pos][:, None, None], m.sin[pos][:, None, None])
     m._flag(flag)
-    return qg.view(N, HKV, G, HD), k[:, 0], v[:, 0]
+    return qg.view(N, m.HKV, m.H // m.HKV, m.HD), k[:, 0], v[:, 0]
 
 
 def _out(m, ly, o, x):
-    return m._linear(m.sg.pre_plain(o.reshape(x.shape[0], H * HD)), ly["wo"], x)
+    return m._linear(m.sg.pre_plain(o.reshape(x.shape[0], m.H * m.HD)), ly["wo"], x)
 
 
 def mlp(m, ly, x):
@@ -164,7 +163,7 @@ def decode_store_attend(m, q, k, v, pos, kv, slot, blocks):
     attn_div inside its compiled region."""
     c = kv_view(kv)
     tri_paged.store(c, slot, k, v)
-    return tri_paged.attend(q, pos.view(-1, 1).expand(-1, G), c, blocks, m.ptab)
+    return tri_paged.attend(q, pos.view(-1, 1).expand(-1, m.H // m.HKV), c, blocks, m.ptab)
 
 
 def attention(m, i, x, pos, kv, plan):
@@ -174,7 +173,8 @@ def attention(m, i, x, pos, kv, plan):
     p = pos.long()
     ly = m.layers[i]
     q, k, v = _qkv(m, ly, x, p)
-    o = torch.zeros(N, HKV, G, HD, dtype=torch.long, device=x.device)
+    G = m.H // m.HKV
+    o = torch.zeros(N, m.HKV, G, m.HD, dtype=torch.long, device=x.device)
     if plan is not None:
         c = kv_view(kv)
         n = plan.n
