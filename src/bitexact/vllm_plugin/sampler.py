@@ -125,6 +125,14 @@ class IntSampler(LogitsProcessor):
         self.strict[req_idx] = bool(_strict(sampling_params) or self.log)
         return self.strict[req_idx] or self.temp[req_idx][0] != 0
 
+    def any_noisy(self):
+        """Does a running request sample with temperature? (then the noisy kernel covers all rows)."""
+        if self.active is None:
+            self.active = _request_state(self.rs)
+        if self.active is False:
+            return True
+        return any(self.temp[s][0] != 0 for s in self.active.req_id_to_index.values())
+
     def any_strict(self):
         """Does a running request need the real float logits? Host only. vLLM's warm-up requests (every feature on)
         leave flags in slots that are free, so only the slots of running requests count; if the runner's
@@ -162,7 +170,7 @@ class IntSampler(LogitsProcessor):
             assert ctx.expanded_idx_mapping.tolist() == slots.tolist(), "host slots != device slots"
             assert ts == [pos[r] + 1 - int(plen[s]) for r, s in enumerate(slots)], "host t != device t"
             self._log(li, seeds, ts, y)
-        if head is None or STASH.strict:
+        if head is None or STASH.strict or STASH.greedy is None:
             logits.fill_(float("-inf"))
         else:                                            # compute_logits left one-hot rows at the greedy token
             logits.scatter_(1, STASH.greedy[:, None], float("-inf"))

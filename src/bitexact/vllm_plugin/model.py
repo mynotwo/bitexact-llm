@@ -170,6 +170,11 @@ class BitExactLlamaForCausalLM(nn.Module):
             self._check_late()
             STASH.head, STASH.logits = head, None
             STASH.strict = STASH.sampler is None or STASH.sampler.any_strict()
+            if not STASH.strict and STASH.sampler.any_noisy():
+                # temperature rows: the sampler's noisy pass chooses every token and rewrites all of vLLM's
+                # logits, so no pass here (and no argmax) and the buffer need not be initialised.
+                STASH.greedy = None
+                return torch.empty(head.M, head.V, dtype=torch.float32, device=head.c.device)
             f, STASH.greedy = tri_sample.head(head, "float" if STASH.strict else "onehot")
             return f
         li = mm.logits(hidden_states.long())
