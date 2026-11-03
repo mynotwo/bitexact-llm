@@ -356,10 +356,15 @@ Throughput on one H800 (GPU empty before the run; 128 input and 128 output token
 | vLLM bf16, CUDA graphs (stock) | 605 | 15,991 | 33,771 |
 | vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 214 | 7,515 | 33,387 |
 | integer plugin before the changes below | 235 | 4,414 | 9,341 |
-| integer plugin, current | 388 | 9,570 | 23,978 |
+| integer plugin after the four changes below | 388 | 9,570 | 23,978 |
+| integer plugin, current (three further changes, later session) | 446 | 10,988 | 27,176 |
 
-Each cell is the median of three timed runs; all four rows ran on the same GPU in one session, alternating
-between configurations. At T = 1 the current plugin gives 379 / 8,916 / 19,386 tok/s. vLLM's batch-invariant mode is the fair deterministic baseline,
+Each cell of the first four rows is the median of three timed runs on the same GPU in one session, alternating
+between configurations. The last row is the median of five runs from a later session on the same GPU type. In that session the
+previous plugin measured 380 / 9,469 / 23,505 and the batch-invariant vLLM row 212 / 7,418 / 32,297 tok/s, so the
+three further changes gave 1.17x / 1.16x / 1.16x, and the plugin reaches 84% of batch-invariant vLLM at batch 128 (73% before).
+Other users' jobs loaded the host during that session, and runs of one configuration spread by up to 10% at T = 0. At T = 1 the current
+plugin gives 441 / 9,398 / 18,024 tok/s; that step is bound by host-side work, so the GPU savings below barely show. vLLM's batch-invariant mode is the fair deterministic baseline,
 but only with `TRITON_ATTN`: with the default FlashAttention backend its logits for a prompt run alone
 differed from the same prompt inside batches of 32 and 128 at 104 and 197 of 512 positions. It guarantees
 batch invariance on one GPU and software stack, not agreement across GPU types or CPUs.
@@ -382,14 +387,28 @@ files byte-equal to the previous commit), raised plugin throughput 1.65x / 2.17x
   run as Triton kernels computing the same integers. Logits and sampling time per step fell from 0.93 to
   0.57 ms at batch 128.
 
-Measurements, profiles and scripts are in `experiments/perf/`.
+Three further changes, verified the same way (14/14 suite runs, hash files byte-equal to the previous commit, and
+token dumps from the production path identical at mixed temperatures, at T = 0, and with logprobs), cut GPU kernel time per
+decode step from 4.58 to 3.48 ms at batch 128:
+
+- The KV cache stores each value as three int8 limb planes instead of an int32 that attention re-split on
+  every read, 25% fewer bytes per key. Decode attention fell from 1.26 to 0.70 ms per step at batch 128.
+- Decode GEMMs with up to 256 rows run in a Triton int8 kernel with tile sizes chosen offline per shape
+  (int32 sums are exact, so the choice does not change any integer). The LM head stays on `torch._int_mm`,
+  which was faster there.
+- One Triton pass over the LM-head output finishes the integer logits, takes the greedy argmax and, at
+  T > 0, draws the integer Gumbel noise, without storing int64 logits. Requests that need float logits
+  (logprobs, penalties, logit bias, structured output) keep the previous path. Logits and sampling fell
+  from 0.58 to 0.41 ms per step at T = 0 and from 1.36 to 0.76 ms at T = 1.
+
+Measurements, profiles and scripts are in `experiments/perf/` (`p2_merge/RESULTS.md` for the combined run).
 
 Long-context decode, one H800, plugin graph replay, S = 16,384 (`tests/vllm/longctx_step.py`, CUDA event median):
 
 | Batch | Decode ms per step | Prefill of a 512-token chunk at S = 16,384 |
 |---|---|---|
-| 1 | 2.87 | 93 ms |
-| 8 | 7.72 | 94 ms |
+| 1 | 2.38 | 75 ms |
+| 8 | 6.58 | 75 ms |
 
 Plugin limitations:
 
