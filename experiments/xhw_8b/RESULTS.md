@@ -1,10 +1,10 @@
 # Llama-3.1-8B exact mode: cross-hardware results
 
 **Conclusion.** With the public exact engine and one shared constants file (internal SHA-256
-`2f02ac8e43f08ac337b397d18fc740eb48dca27158c62ef742fbd4a9e729bfa9`), every run on H800, H100, two x86
+`2f02ac8e43f08ac337b397d18fc740eb48dca27158c62ef742fbd4a9e729bfa9`), every run on H800, H100, L20, two x86
 CPU hosts and an Apple M4 Pro CPU produces the same int64 logits row, greedy token and T = 0.7 sampled
-token as the H800 reference at every compared position: 0 differences in 9,000+ position comparisons.
-L20 is not yet compared: the first run failed at the first forward because one attention kernel exceeded sm_89 shared memory; that is fixed (`f38e1fd`, below) and the rerun, Merlin job `03a48bb8551f1cdb`, was still queued at commit time.
+token as the H800 reference at every compared position: 0 differences in 11,000+ position comparisons.
+The first L20 run failed at the first forward because one attention kernel exceeded sm_89 shared memory; with that fixed (`f38e1fd`, below), the rerun (Merlin job `03a48bb8551f1cdb`) matched in all four modes.
 
 Workload: `workload_T0.7_8x128.json` (SHA-256 `2384dafe…f889`), 8 texts, first 128 generated positions,
 595 positions; teacher forcing, so subset runs cover a prefix of the same rows. Reference:
@@ -22,7 +22,7 @@ Workload: `workload_T0.7_8x128.json` (SHA-256 `2384dafe…f889`), 8 texts, first
 | x86 CPU, Xeon 8457C (141) | CPU float64, `--cpu-lazy` | 2.4.1+cu121 | bs1 (3 texts; 1 text × 4) | 176; 3 | 0 | 0 / 0 |
 | Apple M4 Pro (arm64, macOS 26.3.2) | CPU float64, `--cpu-lazy` | 2.15.0 | bs1, bs8 | 595 each | 0 | 0 / 0 |
 | Apple M4 Pro | CPU float64, `--cpu-lazy` | 2.15.0 | incr (`--positions 32`) | 198 | 0 | 0 / 0 |
-| L20 (Merlin, sm_89) | GPU, Triton int8 | 2.4.1 (3.0.0) | bs1, bs8, incr, incr+compile | pending (job `03a48bb8551f1cdb`) | not verified | not verified |
+| L20 (Merlin, sm_89) | GPU, Triton int8 | 2.4.1 (3.0.0) | bs1, bs8, incr, incr+compile | 595 each | 0 | 0 / 0 |
 
 ## Checks
 
@@ -55,7 +55,8 @@ Workload: `workload_T0.7_8x128.json` (SHA-256 `2384dafe…f889`), 8 texts, first
 
 - Heterogeneity: H800 and H100 are both sm_90 (same Triton kernels, different torch/Triton/host); the two
   x86 hosts have the same CPU model. The distinct arithmetic paths compared are Triton int8 tensor cores,
-  cuBLAS int8, x86 float64 BLAS and arm64 float64 BLAS; sm_89 (L20) would add a different GPU architecture once its rerun completes.
+  cuBLAS int8, x86 float64 BLAS and arm64 float64 BLAS, plus sm_89 (L20) Triton kernels with the attention `bmm`
+  at 2 pipeline stages.
 - M4 incremental decoding covered 32 positions per text (198 rows), not 128; 141 CPU incr 16 positions.
 - incr+compile and cuBLAS ran only on GPUs listed above; CPU runs never use `torch.compile`.
 - Workload is 8 texts at one temperature; longer contexts (> ~700 tokens) are not covered.

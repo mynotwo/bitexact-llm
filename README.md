@@ -248,7 +248,7 @@ logits row, the greedy token and the T = 0.7 sampled token. Details in `experime
 | H100 Triton, torch.compile | torch 2.6.0, Triton 3.2 | 595 | 0 / 0 |
 | x86 CPU (float64 limb GEMM), two hosts | torch 2.4.1 and 2.6.0 | 595 (incremental on one host: 113) | 0 / 0 |
 | Apple M4 Pro CPU | torch 2.15.0 | 595 (incremental: 198) | 0 / 0 |
-| NVIDIA L20 | torch 2.4.1, Triton 3.0 | not yet compared | |
+| NVIDIA L20 (sm_89), Triton | torch 2.4.1, Triton 3.0 | 595 | 0 / 0 |
 
 Not supported: V100 (sm70). The constants build gives the same SHA-256, but Triton 3.0 cannot compile the
 kernels for sm70 (`PassManager::run failed` in make_ttgir), so no logits were compared.
