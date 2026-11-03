@@ -35,7 +35,7 @@ sync)
   echo "synced $(git -C "$LOCAL" rev-parse --short $BRANCH) + $BASEC to $HOST:$S"; exit ;;
 start)
   st=${STAGES:-smoke}; L=$S/go_${st// /_}.log
-  ssh $HOST "STAGES='$st' GPU='${GPU:?set GPU}' TREES='${TREES:-}' O='${O:-}' \
+  ssh $HOST "STAGES='$st' TEMP='${TEMP:-0}' GPU='${GPU:?set GPU}' TREES='${TREES:-}' O='${O:-}' \
     nohup bash $S/repo/experiments/perf/p2_sample/run.sh go > $L 2>&1 < /dev/null & echo started $L"; exit ;;
 status)
   ssh $HOST "tail -4 $S/go_*.log; nvidia-smi --query-gpu=index,memory.used --format=csv,noheader"; exit ;;
@@ -112,11 +112,11 @@ longctx() { D=$O/longctx; mkdir -p $D
   done; done
   grep -h "^RESULT\|^{" $D/*.log | cut -c1-260 | tee -a $SUM; }
 
-prof() { D=$O/prof; mkdir -p $D
+prof() { D=$O/prof${TEMP:-0}; mkdir -p $D
   for t in $TREES; do
     mkdir -p $D/$t
     run $D/$t/int_b128.log 2400 $t bash -c "cd experiments/perf/profile && $PY prof_vllm.py --model $MODEL --batch 128 \
-      --tag ${t}_b128 --out $D/$t/int_b128"
+      --temp ${TEMP:-0} --tag ${t}_b128 --out $D/$t/int_b128"
     $PY $S/repo/experiments/perf/profile/buckets.py --report $D/$t > $D/$t/summary.md
     grep -h "^RESULT" $D/$t/int_b128.log | cut -c1-260 | tee -a $SUM
   done; }
