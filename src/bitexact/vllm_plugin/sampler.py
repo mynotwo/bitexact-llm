@@ -95,6 +95,16 @@ def _strict(sp):
                 or getattr(sp, "logits_processors", None) or getattr(sp, "extra_args", None))
 
 
+def _request_state(lp):
+    """The model runner's RequestState behind the LogitsProcRequestState view (they share their tensors), or
+    False. vLLM gives logits processors no callback when a request finishes."""
+    import gc
+    for o in gc.get_referrers(lp.total_len):
+        if getattr(o, "total_len", None) is lp.total_len and hasattr(o, "req_id_to_index"):
+            return o
+    return False
+
+
 class IntSampler(LogitsProcessor):
     def __init__(self, vllm_config, req_states):
         self.rs = req_states
@@ -104,6 +114,7 @@ class IntSampler(LogitsProcessor):
         self.lnt = None
         self.log = os.environ.get("BITEXACT_HASH_LOG")
         self.strict = [False] * n
+        self.active = None
         STASH.sampler = self
 
     def add_request(self, req_idx, sampling_params):
@@ -115,8 +126,14 @@ class IntSampler(LogitsProcessor):
         return self.strict[req_idx] or self.temp[req_idx][0] != 0
 
     def any_strict(self):
-        """Does a running request need the real float logits? (host only; slots of finished requests are free.)"""
-        return any(self.strict[s] for s in self.rs.req_id_to_index.values())
+        """Does a running request need the real float logits? Host only. vLLM's warm-up requests (every feature on)
+        leave flags in slots that are free, so only the slots of running requests count; if the runner's
+        RequestState cannot be found, every flag counts (the float path: slower, never wrong)."""
+        if self.active is None:
+            self.active = _request_state(self.rs)
+        if self.active is False:
+            return any(self.strict)
+        return any(self.strict[s] for s in self.active.req_id_to_index.values())
 
     def apply(self, logits, ctx):
         if not STASH.active:
