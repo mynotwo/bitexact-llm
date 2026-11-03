@@ -34,7 +34,7 @@ def test_fused_paged_attention_exact():
             ref_num = torch.einsum("rhms,rhsd->rhmd", p, V)
             for ns in (None, 1, 5, 64):
                 for bm in (None, 16):                   # M <= 4: limb-stacked decode kernels, then the general ones
-                    num, den2 = tri_paged.attend(q, qpos, c, bt, tri_paged.weight_table(lut), nsplit=ns, bm=bm)
+                    num, den2 = tri_paged.attend(q, qpos, tri_paged.to_limbs(c), bt, tri_paged.weight_table(lut), nsplit=ns, bm=bm)
                     assert torch.equal(num.cpu(), ref_num) and torch.equal(den2.cpu(), den), (R, M, ns, bm)
 
 
