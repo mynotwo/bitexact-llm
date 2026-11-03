@@ -31,6 +31,7 @@ from vllm.v1.worker.gpu.sample.logits_processor import LogitsProcessor
 
 from bitexact.int8.consts import FR
 from bitexact.intops import first_argmax
+from bitexact.vllm_plugin import tri_sample
 from bitexact.sampling import gumbel, sample, temp_ratio
 
 
@@ -38,6 +39,9 @@ class _Stash:
     logits = None            # int64 [rows, V] from the latest compute_logits
     greedy = None            # int64 [rows], first argmax of each logits row (same compute_logits)
     active = False           # set when the integer model is loaded in this process
+    head = None              # tri_sample.Head of the latest compute_logits (the int64 logits are not stored)
+    strict = False           # this step: some request needs the real float logits (see _strict)
+    sampler = None           # the IntSampler of the process
 
 
 STASH = _Stash()
@@ -80,6 +84,27 @@ def integer_sample(li, seeds, ts, temps, lnt, greedy=None):
     return out
 
 
+def _strict(sp):
+    """True if the request uses something that reads or edits vLLM's float logits before the token is drawn
+    (logprobs, penalties, bias, allowed / bad words, min_tokens, structured output, extra processors).
+    Without such requests compute_logits hands vLLM one-hot logits at the integer argmax and greedy batches
+    skip the logits processing step altogether."""
+    return bool(sp.logprobs is not None or sp.prompt_logprobs is not None or sp.presence_penalty
+                or sp.frequency_penalty or sp.repetition_penalty != 1.0 or sp.logit_bias or sp.allowed_token_ids
+                or sp.bad_words or getattr(sp, "bad_words_token_ids", None) or sp.min_tokens or getattr(sp, "structured_outputs", None) is not None
+                or getattr(sp, "logits_processors", None) or getattr(sp, "extra_args", None))
+
+
+def _request_state(lp):
+    """The model runner's RequestState behind the LogitsProcRequestState view (they share their tensors), or
+    False. vLLM gives logits processors no callback when a request finishes."""
+    import gc
+    for o in gc.get_referrers(lp.total_len):
+        if getattr(o, "total_len", None) is lp.total_len and hasattr(o, "req_id_to_index"):
+            return o
+    return False
+
+
 class IntSampler(LogitsProcessor):
     def __init__(self, vllm_config, req_states):
         self.rs = req_states
@@ -88,34 +113,67 @@ class IntSampler(LogitsProcessor):
         self.temp = [(0, 1)] * n
         self.lnt = None
         self.log = os.environ.get("BITEXACT_HASH_LOG")
+        self.strict = [False] * n
+        self.active = None
+        STASH.sampler = self
 
     def add_request(self, req_idx, sampling_params):
         if not STASH.active:
             return False
         self.seed[req_idx] = int(sampling_params.seed or 0)
         self.temp[req_idx] = temp_ratio(sampling_params.temperature)
-        return True
+        self.strict[req_idx] = bool(_strict(sampling_params) or self.log)
+        return self.strict[req_idx] or self.temp[req_idx][0] != 0
+
+    def any_noisy(self):
+        """Does a running request sample with temperature? (then the noisy kernel covers all rows)."""
+        if self.active is None:
+            self.active = _request_state(self.rs)
+        if self.active is False:
+            return True
+        return any(self.temp[s][0] != 0 for s in self.active.req_id_to_index.values())
+
+    def any_strict(self):
+        """Does a running request need the real float logits? Host only. vLLM's warm-up requests (every feature on)
+        leave flags in slots that are free, so only the slots of running requests count; if the runner's
+        RequestState cannot be found, every flag counts (the float path: slower, never wrong)."""
+        if self.active is None:
+            self.active = _request_state(self.rs)
+        if self.active is False:
+            return any(self.strict)
+        return any(self.strict[s] for s in self.active.req_id_to_index.values())
 
     def apply(self, logits, ctx):
         if not STASH.active:
             return logits
-        li = STASH.logits
-        assert li is not None and li.shape[0] == logits.shape[0], "integer logits rows != vLLM rows"
+        head = STASH.head
+        li = STASH.logits if head is None else None
+        n = head.M if head is not None else li.shape[0]
+        assert (head is not None or li is not None) and n == logits.shape[0], "integer logits rows != vLLM rows"
         if self.lnt is None:
             from bitexact.vllm_plugin.model import MODEL
             self.lnt = MODEL.m.ln
         slots = ctx.idx_mapping_np                       # one logits row per request (no spec decoding)
-        assert len(slots) == li.shape[0], "logits rows != requests (speculative decoding is not supported)"
+        assert len(slots) == n, "logits rows != requests (speculative decoding is not supported)"
         plen = self.rs.prompt_len.np
         ts = [int(ctx.seq_lens_upper_bound_np[r]) - int(plen[s]) for r, s in enumerate(slots)]
         seeds = [self.seed[s] for s in slots]
-        y = integer_sample(li, seeds, ts, [self.temp[s] for s in slots], self.lnt, STASH.greedy)
+        temps = [self.temp[s] for s in slots]
+        if head is None:
+            y = integer_sample(li, seeds, ts, temps, self.lnt, STASH.greedy)
+        else:                                            # one pass over the GEMM output; rows with tn = 0 are greedy
+            y = tri_sample.noisy(head, tri_sample.row_state([(seeds[r], max(ts[r], 0)) for r in range(n)], temps),
+                                 self.lnt)
         if self.log:
+            li = head.logits() if li is None else li
             pos = ctx.pos.tolist()
             assert ctx.expanded_idx_mapping.tolist() == slots.tolist(), "host slots != device slots"
             assert ts == [pos[r] + 1 - int(plen[s]) for r, s in enumerate(slots)], "host t != device t"
             self._log(li, seeds, ts, y)
-        logits.fill_(float("-inf"))
+        if head is None or STASH.strict or STASH.greedy is None:
+            logits.fill_(float("-inf"))
+        else:                                            # compute_logits left one-hot rows at the greedy token
+            logits.scatter_(1, STASH.greedy[:, None], float("-inf"))
         logits.scatter_(1, y[:, None], 0.0)
         return logits
 

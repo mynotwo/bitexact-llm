@@ -2,9 +2,9 @@
 
 vLLM allocates the KV cache for each layer from the Attention layer we declare (8 KV heads, head size
 128, bf16). vLLM 0.32 hands each layer a view [blocks, heads, block_size, K|V] with K and V of one head
-side by side in the last dim (2 * 128 bf16 = 512 bytes, unit stride). Viewed as int32 that last dim is
-[K (64 int32) | V (64 int32)], exactly our integer K (FQ) and V (FV) of one KV head. So vLLM's block manager, block
-tables, slot mapping and prefix cache drive our cache unchanged.
+side by side in the last dim (2 * 128 bf16 = 512 bytes, unit stride). Viewed as int8 that last dim holds the
+int8 base-256 limbs of our integer K (FQ) and V (FV) of one KV head, 3 limbs each (tri_paged.py: 384 of the 512
+bytes). So vLLM's block manager, block tables, slot mapping and prefix cache drive our cache unchanged.
 
 Why the result does not depend on scheduling: the K/V row of a token is a row-local integer function
 of the token and its position (same bits whether it came from a cached prefix block, an earlier prefill
@@ -100,19 +100,14 @@ def make_plan(meta, n_tokens, positions):
 
 
 def kv_view(kv):
-    """vLLM's bf16 cache view [nb, HKV, bs, 2 * 2 * HD] -> int32 [nb, HKV, bs, 2 * HD] (K | V)."""
+    """vLLM's bf16 cache view [nb, HKV, bs, 2 * 2 * HD] -> int8 limb planes [nb, HKV, bs, 8 * HD] (tri_paged)."""
     assert kv.dim() == 4 and kv.shape[1] == HKV and kv.shape[3] == 4 * HD and kv.stride(3) == 1, \
         (kv.shape, kv.stride())
-    return kv.view(torch.int32)
+    return kv.view(torch.int8)
 
 
 def _store(c, slot, k, v):
-    keep = slot >= 0                                                 # dummy / padded tokens: -1
-    if not bool(keep.all()):
-        slot, k, v = slot[keep], k[keep], v[keep]
-    bs = c.shape[2]
-    blk, off = slot // bs, slot % bs
-    c[blk, :, off] = torch.cat([k, v], -1).to(torch.int32)          # [n, HKV, 2 HD]
+    tri_paged.store(c, slot, k, v)                                   # dummy / padded tokens (slot -1) are skipped
 
 
 def _attend(m, q, qpos, c, bt):
@@ -168,8 +163,7 @@ def decode_store_attend(m, q, k, v, pos, kv, slot, blocks):
     (vLLM's null block 0, never given to a request) and position 0. Returns (num, den): the caller applies
     attn_div inside its compiled region."""
     c = kv_view(kv)
-    bs = c.shape[2]
-    c[slot // bs, :, slot % bs] = torch.cat([k, v], -1).to(torch.int32)
+    tri_paged.store(c, slot, k, v)
     return tri_paged.attend(q, pos.view(-1, 1).expand(-1, G), c, blocks, m.ptab)
 
 

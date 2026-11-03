@@ -19,6 +19,10 @@ need exp(a) * exp(b) == exp(a + b) on the quantized table, which does not hold, 
 not reproduce the engine's integers. Kernel 1 reads only K (no exp, no V).
 Keys are visited only up to the largest query position of the tile (read on the device), so the
 kernels need no host-side sequence lengths and are CUDA-graph safe.
+Cache layout: int8 limb planes per (block, KV head, slot) row of 512 bytes: K limbs 0, 1, 2 at bytes
+[0, 64), [64, 128), [128, 192), V limbs at [192, 384) (the rest is unused; the row stays the 512 bytes vLLM
+allocates). Limb i is the signed base-256 digit _split would produce of the int32 K / V value, so the kernels
+read 384 instead of 512 bytes per key and skip the splitting. `store` writes the planes.
 Returns num (int64 [R, HKV, M, HD]) and den (int64 [R, HKV, M, 1]); the caller rounds num / den.
 """
 
@@ -40,11 +44,8 @@ def _split(r):
 
 
 @triton.jit
-def _limb_dot(a0, a1, a2, rb):
-    """Exact a @ b, a given as 3 int8 limbs, b int32 within 3 limbs -> int64."""
-    b0, rb = _split(rb)
-    b1, rb = _split(rb)
-    b2, rb = _split(rb)
+def _limb_dot(a0, a1, a2, b0, b1, b2):
+    """Exact a @ b, a and b given as 3 int8 limbs each -> int64."""
     c0 = tl.dot(a0, b0, out_dtype=tl.int32)
     c1 = tl.dot(a1, b0, out_dtype=tl.int32) + tl.dot(a0, b1, out_dtype=tl.int32)
     c2 = tl.dot(a2, b0, out_dtype=tl.int32) + tl.dot(a1, b1, out_dtype=tl.int32) + \
@@ -56,11 +57,8 @@ def _limb_dot(a0, a1, a2, rb):
 
 
 @triton.jit
-def _limb_parts(a0, a1, a2, rb):
+def _limb_parts(a0, a1, a2, b0, b1, b2):
     """The five int32 limb-weight partial sums of a @ b (weights 2^0, 2^8, ..., 2^32)."""
-    b0, rb = _split(rb)
-    b1, rb = _split(rb)
-    b2, rb = _split(rb)
     c0 = tl.dot(a0, b0, out_dtype=tl.int32)
     c1 = tl.dot(a1, b0, out_dtype=tl.int32) + tl.dot(a0, b1, out_dtype=tl.int32)
     c2 = tl.dot(a2, b0, out_dtype=tl.int32) + tl.dot(a1, b1, out_dtype=tl.int32) + \
@@ -68,6 +66,22 @@ def _limb_parts(a0, a1, a2, rb):
     c3 = tl.dot(a2, b1, out_dtype=tl.int32) + tl.dot(a1, b2, out_dtype=tl.int32)
     c4 = tl.dot(a2, b2, out_dtype=tl.int32)
     return c0, c1, c2, c3, c4
+
+
+@triton.jit
+def _load_k(cbase, off, kok, rd, DH: tl.constexpr):
+    """The 3 int8 limb planes of the keys at row offsets off ([BN]) -> three [DH, BN] int8 tiles."""
+    p = cbase + off[None, :] + rd[:, None]
+    m = kok[None, :]
+    return tl.load(p, mask=m, other=0), tl.load(p + DH, mask=m, other=0), tl.load(p + 2 * DH, mask=m, other=0)
+
+
+@triton.jit
+def _load_v(cbase, off, kok, rd, DH: tl.constexpr):
+    """The 3 int8 limb planes of the values -> three [BN, DH] int8 tiles."""
+    p = cbase + off[:, None] + 3 * DH + rd[None, :]
+    m = kok[:, None]
+    return tl.load(p, mask=m, other=0), tl.load(p + DH, mask=m, other=0), tl.load(p + 2 * DH, mask=m, other=0)
 
 
 @triton.jit
@@ -100,13 +114,14 @@ def _tile(q_ptr, qpos_ptr, bt_ptr, M, sqz, sqm, spz, sbt, NSPLIT,
 
 
 @triton.jit
-def _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS: tl.constexpr, BN: tl.constexpr):
+def _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs,
+            BS: tl.constexpr, DH: tl.constexpr, BN: tl.constexpr):
     ks = k0 + tl.arange(0, BN)
     kok = ks < hi
     blk = tl.load(bt_ptr + ks // BS, mask=kok, other=0).to(tl.int64)
     off = blk * sc_nb + (ks % BS) * sc_bs
-    kt = tl.load(cbase + off[None, :] + rd[:, None], mask=kok[None, :], other=0)           # [DH, BN]
-    raw = _limb_dot(a0, a1, a2, kt)
+    b0, b1, b2 = _load_k(cbase, off, kok, rd, DH)
+    raw = _limb_dot(a0, a1, a2, b0, b1, b2)
     valid = (ks[None, :] <= qpos[:, None]) & kok[None, :]
     return raw, valid, off, kok
 
@@ -120,7 +135,7 @@ def _max_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, mx_ptr, M, NSPLIT,
     cbase = c_ptr + h * sc_h
     mx = tl.full((BM,), NEG, dtype=tl.int64)
     for k0 in tl.range(lo, hi, BN, num_stages=1):
-        raw, valid, off, kok = _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, BN)
+        raw, valid, off, kok = _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, DH, BN)
         mx = tl.maximum(mx, tl.max(tl.where(valid, raw, NEG), axis=1))
     tl.atomic_max(mx_ptr + pz * M + rm, mx, mask=mok & (hi > lo))
 
@@ -143,7 +158,7 @@ def _acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, den_p
     n4 = tl.zeros((BM, DH), dtype=tl.int32)
     den = tl.zeros((BM,), dtype=tl.int64)
     for k0 in tl.range(lo, hi, BN, num_stages=1):
-        raw, valid, off, kok = _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, BN)
+        raw, valid, off, kok = _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, DH, BN)
         z = _rsh(tl.where(valid, raw, NEG) - mx[:, None], ZSH)          # <= 0
         idx = (tl.maximum(z, ZLO - 1) - ZLO).to(tl.int32)               # table index, -1 = below table
         ok = valid & (idx >= 0)
@@ -152,8 +167,8 @@ def _acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, den_p
         p0, p = _split(p)
         p1, p = _split(p)
         p2, p = _split(p)
-        vt = tl.load(cbase + off[:, None] + DH + rd[None, :], mask=kok[:, None], other=0)  # [BN, DH]
-        c0, c1, c2, c3, c4 = _limb_parts(p0, p1, p2, vt)
+        v0, v1, v2 = _load_v(cbase, off, kok, rd, DH)
+        c0, c1, c2, c3, c4 = _limb_parts(p0, p1, p2, v0, v1, v2)
         n0 += c0
         n1 += c1
         n2 += c2
@@ -213,15 +228,12 @@ def _dec_tile(q_ptr, qpos_ptr, bt_ptr, M, sqz, sqm, spz, sbt, NSPLIT,
 
 @triton.jit
 def _dec_scores(qs, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs,
-                BS: tl.constexpr, BQ: tl.constexpr, BN: tl.constexpr):
+                BS: tl.constexpr, DH: tl.constexpr, BQ: tl.constexpr, BN: tl.constexpr):
     ks = k0 + tl.arange(0, BN)
     kok = ks < hi
     blk = tl.load(bt_ptr + ks // BS, mask=kok, other=0).to(tl.int64)
     off = blk * sc_nb + (ks % BS) * sc_bs
-    kt = tl.load(cbase + off[None, :] + rd[:, None], mask=kok[None, :], other=0)  # [DH, BN]
-    b0, kt = _split(kt)
-    b1, kt = _split(kt)
-    b2, kt = _split(kt)
+    b0, b1, b2 = _load_k(cbase, off, kok, rd, DH)
     raw = _unstack(tl.dot(qs, b0, out_dtype=tl.int32), tl.dot(qs, b1, out_dtype=tl.int32),
                    tl.dot(qs, b2, out_dtype=tl.int32), BQ)
     valid = (ks[None, :] <= qpos[:, None]) & kok[None, :]
@@ -237,7 +249,7 @@ def _dec_max_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, mx_ptr, M, NSPLIT,
     cbase = c_ptr + h * sc_h
     mx = tl.full((BQ,), NEG, dtype=tl.int64)
     for k0 in tl.range(lo, hi, BN, num_stages=1):
-        raw, valid, off, kok = _dec_scores(qs, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, BQ, BN)
+        raw, valid, off, kok = _dec_scores(qs, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, DH, BQ, BN)
         mx = tl.maximum(mx, tl.max(tl.where(valid, raw, NEG), axis=1))
     tl.atomic_max(mx_ptr + pz * M + rm, mx, mask=mok & (hi > lo))
 
@@ -256,7 +268,7 @@ def _dec_acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, d
     if FUSED:
         mx = tl.full((BQ,), NEG, dtype=tl.int64)
         for k0 in tl.range(lo, hi, BN, num_stages=1):
-            raw, valid, off, kok = _dec_scores(qs, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, BQ, BN)
+            raw, valid, off, kok = _dec_scores(qs, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, DH, BQ, BN)
             mx = tl.maximum(mx, tl.max(tl.where(valid, raw, NEG), axis=1))
     else:
         mx = tl.load(mx_ptr + pz * M + rm, mask=mok, other=0)
@@ -265,17 +277,14 @@ def _dec_acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, d
     e2 = tl.zeros((4 * BQ, DH), dtype=tl.int32)
     den = tl.zeros((BQ,), dtype=tl.int64)
     for k0 in tl.range(lo, hi, BN, num_stages=1):
-        raw, valid, off, kok = _dec_scores(qs, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, BQ, BN)
+        raw, valid, off, kok = _dec_scores(qs, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, DH, BQ, BN)
         z = _rsh(tl.where(valid, raw, NEG) - mx[:, None], ZSH)          # <= 0
         idx = (tl.maximum(z, ZLO - 1) - ZLO).to(tl.int32)               # table index, -1 = below table
         ok = valid & (idx >= 0)
         p = tl.load(ptab_ptr + tl.maximum(idx, 0), mask=ok, other=0)    # int32, = rsh(exp, FE - FP)
         den += tl.sum(p, axis=1).to(tl.int64)
         ps = _stack(p, BQ)
-        vt = tl.load(cbase + off[:, None] + DH + rd[None, :], mask=kok[:, None], other=0)  # [BN, DH]
-        v0, vt = _split(vt)
-        v1, vt = _split(vt)
-        v2, vt = _split(vt)
+        v0, v1, v2 = _load_v(cbase, off, kok, rd, DH)
         e0 += tl.dot(ps, v0, out_dtype=tl.int32)
         e1 += tl.dot(ps, v1, out_dtype=tl.int32)
         e2 += tl.dot(ps, v2, out_dtype=tl.int32)
@@ -288,6 +297,45 @@ def _dec_acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, d
         any_k = hi > lo
         tl.atomic_add(out, num, mask=mok[:, None] & any_k)
         tl.atomic_add(den_ptr + pz * M + rm, den, mask=mok & any_k)
+
+
+@triton.jit
+def _store_kernel(c_ptr, slot_ptr, k_ptr, v_ptr, skz, skh, svz, svh, sc_nb, sc_h, sc_bs,
+                  BS: tl.constexpr, DH: tl.constexpr):
+    n = tl.program_id(0).to(tl.int64)
+    h = tl.program_id(1).to(tl.int64)
+    slot = tl.load(slot_ptr + n)
+    rd = tl.arange(0, DH)
+    base = c_ptr + (slot // BS) * sc_nb + h * sc_h + (slot % BS) * sc_bs
+    k = tl.load(k_ptr + n * skz + h * skh + rd).to(tl.int32)
+    v = tl.load(v_ptr + n * svz + h * svh + rd).to(tl.int32)
+    ok = slot >= 0                                    # dummy / padded tokens carry slot -1: not stored
+    for i in tl.static_range(3):
+        k0, k = _split(k)
+        v0, v = _split(v)
+        tl.store(base + i * DH + rd, k0, mask=ok)
+        tl.store(base + (3 + i) * DH + rd, v0, mask=ok)
+
+
+def store(c, slot, k, v):
+    """Write K / V (int64 [N, HKV, HD], |.| within 3 limbs) of the tokens at cache slots slot [N] into the
+    limb-plane cache c (int8 [nb, HKV, bs, 512]); slot < 0 is skipped."""
+    N = slot.shape[0]
+    if N:
+        _store_kernel[(N, HKV)](c, slot, k, v, k.stride(0), k.stride(1), v.stride(0), v.stride(1),
+                                c.stride(0), c.stride(1), c.stride(2), BS=c.shape[2], DH=HD, num_warps=1)
+
+
+def to_limbs(c):
+    """int32 cache [nb, HKV, bs, 2 HD] (K | V) -> the int8 limb-plane layout (reference / tests)."""
+    out = torch.zeros(*c.shape[:3], 8 * HD, dtype=torch.int8, device=c.device)
+    for part, o in ((c[..., :HD], 0), (c[..., HD:], 3)):
+        r = part.clone()
+        for i in range(3):
+            lo = ((r + 128) & 255) - 128
+            out[..., (o + i) * HD:(o + i + 1) * HD] = lo.to(torch.int8)
+            r = (r - lo) >> 8
+    return out
 
 
 def weight_table(lut):
@@ -304,7 +352,7 @@ SM_TARGET = 264        # programs to aim for (2 per SM on H100 / H800)
 @torch.compiler.disable          # a graph break for torch.compile callers: the launch picks nsplit from shapes
 def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=None, warps=4):
     """q int64 [R, HKV, M, HD] (|q| within 3 limbs), qpos int64 [R, M] (key s visible to query i iff
-    s <= qpos[r, i]), cache int32 [nb, HKV, bs, 2 HD], bt [R, *] block-table rows, ptab = weight_table(exp table).
+    s <= qpos[r, i]), cache int8 limb planes [nb, HKV, bs, 8 HD] (see `store`), bt [R, *] block-table rows, ptab = weight_table(exp table).
     Returns num int64 [R, HKV, M, HD], den int64 [R, HKV, M, 1].
 
     Split-KV: each (query tile, request, head) is split into nsplit key ranges, computed on the device
@@ -317,7 +365,7 @@ def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=None, warps=4):
     q = q.contiguous()
     qpos = qpos.contiguous()
     if M <= DEC_BQ and bm is None:
-        return _attend_dec(q, qpos, cache, bt, ptab, nsplit, bn or 128, warps)
+        return _attend_dec(q, qpos, cache, bt, ptab, nsplit, bn or (64 if R >= 64 else 128), warps)   # 64: less masked tile at short contexts
     BM = bm or (16 if M <= 16 else 64)
     bn = bn or 64
     tiles = triton.cdiv(M, BM) * R * HKV
