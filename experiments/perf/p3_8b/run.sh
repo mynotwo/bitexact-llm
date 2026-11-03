@@ -26,6 +26,11 @@ for st in "$@"; do case $st in
      run busy_vllmgraph_s5 $RS --mode busy --prefix-cache 1 --arrival-seed 5 --eager 0 --out $O/busy_vllmgraph_s5
      run alone_vllmgraph $RS --mode alone --prefix-cache 1 --eager 0 --out $O/alone_vllmgraph
      $PY tests/vllm/compare.py $O/ref $O/alone_pc1 $O/busy_pc1_s0 $O/busy_pc0_s1 $O/busy_pc1_s2_b64 $O/busy_eager_s4 $O/busy_vllmgraph_s5 $O/alone_vllmgraph > $O/compare.txt 2>&1; echo compare_exit $? ;;
+ rest) export GPU_UTIL=0.6; RS="$PY tests/vllm/run_serve.py --model $M"
+     run ref $PY tests/vllm/run_ref.py --const $C --out $O/ref
+     run busy_eager_s4 env BITEXACT_GRAPHS=0 BITEXACT_COMPILE=0 $RS --mode busy --prefix-cache 1 --arrival-seed 4 --max-seqs 128 --out $O/busy_eager_s4
+     run alone_vllmgraph $RS --mode alone --prefix-cache 1 --eager 0 --out $O/alone_vllmgraph
+     $PY tests/vllm/compare.py $O/ref $O/alone_pc1 $O/busy_pc1_s0 $O/busy_pc0_s1 $O/busy_pc1_s2_b64 $O/busy_eager_s4 $O/busy_vllmgraph_s5 $O/alone_vllmgraph > $O/compare.txt 2>&1; echo compare_exit $? ;;
  bench) for b in 1 32 128; do for rep in 1 2 3; do
      run int_b${b}_r$rep $PY tests/vllm/bench.py --model $M --batch $b
      run bf16_b${b}_r$rep $PY tests/vllm/bench.py --model $HF --batch $b

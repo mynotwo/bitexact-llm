@@ -41,7 +41,7 @@ def main():
     llm = LLM(model=a.model, enforce_eager=bool(a.eager), enable_chunked_prefill=True,
               max_num_batched_tokens=a.budget, max_num_seqs=a.max_seqs,
               max_model_len=16384 if a.long else 2048, enable_prefix_caching=bool(a.prefix_cache),
-              gpu_memory_utilization=0.35, seed=0, num_gpu_blocks_override=a.kv_blocks or None,
+              gpu_memory_utilization=float(os.environ.get("GPU_UTIL", "0.35")), seed=0, num_gpu_blocks_override=a.kv_blocks or None,
               disable_log_stats=False)
     eng = llm.llm_engine
     tg = workload.pick(a.long, a.max_new)
