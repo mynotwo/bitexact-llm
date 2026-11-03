@@ -107,3 +107,19 @@ def test_attn_out_and_mlp_exact(m, M):
         tri_fuse.flag_end(m)
         assert bool(m.err) == bool(ref[3]) and not scr.any()
     m.err.zero_()
+
+
+@pytest.mark.parametrize("big", [False, True])
+def test_final_bound_flag(m, big):
+    from bitexact.vllm_plugin import tri_fuse
+    lin = m.layers[0]["wd"]
+    M = 4
+    x = torch.zeros(M, 2048, dtype=torch.long, device="cuda")
+    x[2, 5] = (1 << 42) if big else (1 << 42) - 1
+    c = torch.zeros(2 * M + 16, 2048, dtype=torch.int32, device="cuda")
+    mant = torch.ones(M, dtype=torch.long, device="cuda")
+    e = torch.zeros(M, dtype=torch.long, device="cuda")
+    m.err.zero_()
+    out = tri_fuse.add_norm(m, c, lin, mant, e, x, None)[0]
+    assert torch.equal(out, x) and bool(m.err) == big
+    m.err.zero_()
