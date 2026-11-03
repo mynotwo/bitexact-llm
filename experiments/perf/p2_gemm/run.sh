@@ -20,7 +20,7 @@ HOST=audreymao@10.154.162.141
 S=/data41/audreymao/p2_gemm/run
 A=/data41/audreymao/a17_vllm
 LOCAL=$(cd "$(dirname "$0")/../../.." && pwd)
-PROF_SRC=/Users/bytedance/Documents/projects/bitexact-main/experiments/perf/profile    # untracked profiler tools
+PROF_SRC=/Users/bytedance/Documents/projects/bitexact-llm/experiments/perf/profile    # untracked profiler tools
 BRANCH=${BRANCH:-perf2/gemm}; BASEC=971a3e1
 case "${1:-}" in
 sync)
