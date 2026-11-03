@@ -178,6 +178,12 @@ class Head:
         self.c, self.m, self.fmsh, self.mant, self.e = c, m, fmsh, mant, e
         self.M, self.V = mant.shape[0], c.shape[1]
 
+    def logits(self):
+        """The int64 logits [M, V] (eager segs.post; only for hash logging)."""
+        from bitexact.int8.segs import post
+        from bitexact.intops import join_limbs
+        return post(join_limbs(self.c, self.M, 2), self.m, self.fmsh, self.mant, self.e, False)[0]
+
 
 def _plan(M, V, block):
     nch = max(1, min(triton.cdiv(V, block), triton.cdiv(264, max(M, 1))))     # ~2 programs per SM over all rows

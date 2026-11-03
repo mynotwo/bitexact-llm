@@ -29,7 +29,7 @@ from vllm.model_executor.layers.attention import Attention
 from bitexact.int8.consts import FT
 from bitexact.int8.model import IntLlama
 from bitexact.llama import rope_tables
-from bitexact.vllm_plugin import paged, tri_logits, tri_paged
+from bitexact.vllm_plugin import paged, tri_logits, tri_paged, tri_sample
 from bitexact.vllm_plugin.sampler import STASH
 
 MODEL = None             # the loaded model in this process (the sampler reads the ln table from it)
@@ -161,9 +161,19 @@ class BitExactLlamaForCausalLM(nn.Module):
         self.flag.copy_(self.m.err, non_blocking=True)
 
     def compute_logits(self, hidden_states):
-        li = self.m.logits(hidden_states.long())
+        mm = self.m
+        if hidden_states.is_cuda and mm.nl == 2 and not mm.post_check:
+            # LM-head GEMM, then one Triton pass over its output (tri_sample): no int64 logits are stored.
+            pre = mm.sg.pre_norm(hidden_states.long(), mm.gf)
+            w, mw, fmsh = mm.lm
+            head = tri_sample.Head(mm._gemm(pre[0], w), mw, fmsh, pre[1], pre[2])
+            self._check_late()
+            STASH.head, STASH.logits = head, None
+            f, STASH.greedy = tri_sample.head(head, "float" if STASH.strict else "onehot")
+            return f
+        li = mm.logits(hidden_states.long())
         self._check_late()
-        STASH.logits = li
+        STASH.head, STASH.logits = None, li
         if not li.is_cuda:
             STASH.greedy = None
             return li.float() * (2.0 ** -16)

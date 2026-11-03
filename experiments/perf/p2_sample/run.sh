@@ -112,6 +112,14 @@ longctx() { D=$O/longctx; mkdir -p $D
   done; done
   grep -h "^RESULT\|^{" $D/*.log | cut -c1-260 | tee -a $SUM; }
 
+tokens() { D=$O/tokens; mkdir -p $D
+  for t in $TREES; do
+    run $D/${t}_mixed.log 1800 $t $PY experiments/perf/p2_sample/tokens.py --model $MODEL --out $D/${t}_mixed.json
+    run $D/${t}_t0.log 1800 $t $PY experiments/perf/p2_sample/tokens.py --model $MODEL --out $D/${t}_t0.json --temps 0
+    run $D/${t}_lp.log 1800 $t $PY experiments/perf/p2_sample/tokens.py --model $MODEL --out $D/${t}_lp.json --logprobs
+  done
+  for k in mixed t0 lp; do cmp -s $D/base_$k.json $D/repo_$k.json && echo "tokens $k IDENTICAL" || echo "tokens $k DIFF"; done | tee -a $SUM; }
+
 prof() { D=$O/prof${TEMP:-0}; mkdir -p $D
   for t in $TREES; do
     mkdir -p $D/$t
