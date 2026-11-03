@@ -40,7 +40,8 @@ class _Stash:
     greedy = None            # int64 [rows], first argmax of each logits row (same compute_logits)
     active = False           # set when the integer model is loaded in this process
     head = None              # tri_sample.Head of the latest compute_logits (the int64 logits are not stored)
-    strict = False           # a request needs the real float logits or another vLLM logits stage: see _strict
+    strict = False           # this step: some request needs the real float logits (see _strict)
+    sampler = None           # the IntSampler of the process
 
 
 STASH = _Stash()
@@ -90,7 +91,7 @@ def _strict(sp):
     skip the logits processing step altogether."""
     return bool(sp.logprobs is not None or sp.prompt_logprobs is not None or sp.presence_penalty
                 or sp.frequency_penalty or sp.repetition_penalty != 1.0 or sp.logit_bias or sp.allowed_token_ids
-                or sp.bad_words or sp.min_tokens or getattr(sp, "structured_outputs", None) is not None
+                or sp.bad_words or getattr(sp, "bad_words_token_ids", None) or sp.min_tokens or getattr(sp, "structured_outputs", None) is not None
                 or getattr(sp, "logits_processors", None) or getattr(sp, "extra_args", None))
 
 
@@ -102,15 +103,20 @@ class IntSampler(LogitsProcessor):
         self.temp = [(0, 1)] * n
         self.lnt = None
         self.log = os.environ.get("BITEXACT_HASH_LOG")
+        self.strict = [False] * n
+        STASH.sampler = self
 
     def add_request(self, req_idx, sampling_params):
         if not STASH.active:
             return False
         self.seed[req_idx] = int(sampling_params.seed or 0)
         self.temp[req_idx] = temp_ratio(sampling_params.temperature)
-        if _strict(sampling_params) or self.log:
-            STASH.strict = True                  # sticky: the float logits stay real for the rest of the process
-        return STASH.strict or self.temp[req_idx][0] != 0
+        self.strict[req_idx] = bool(_strict(sampling_params) or self.log)
+        return self.strict[req_idx] or self.temp[req_idx][0] != 0
+
+    def any_strict(self):
+        """Does a running request need the real float logits? (host only; slots of finished requests are free.)"""
+        return any(self.strict[s] for s in self.rs.req_id_to_index.values())
 
     def apply(self, logits, ctx):
         if not STASH.active:

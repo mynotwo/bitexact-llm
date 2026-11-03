@@ -169,6 +169,7 @@ class BitExactLlamaForCausalLM(nn.Module):
             head = tri_sample.Head(mm._gemm(pre[0], w), mw, fmsh, pre[1], pre[2])
             self._check_late()
             STASH.head, STASH.logits = head, None
+            STASH.strict = STASH.sampler is None or STASH.sampler.any_strict()
             f, STASH.greedy = tri_sample.head(head, "float" if STASH.strict else "onehot")
             return f
         li = mm.logits(hidden_states.long())
