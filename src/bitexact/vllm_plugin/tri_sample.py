@@ -42,6 +42,100 @@ SERDIV = tl.constexpr(24 << 24)
 BIGI = tl.constexpr(1 << 62)
 IMINI = tl.constexpr(-(1 << 63))
 
+M32 = tl.constexpr(0xFFFFFFFF)
+SEEDB = tl.constexpr(sampling.SEED_BASE)
+MULT_H = tl.constexpr(gpu_pcg.MULT >> 64)
+MULT_L = tl.constexpr(gpu_pcg.MULT & ((1 << 64) - 1))
+
+
+@triton.jit
+def _hm(v, hc):
+    """numpy SeedSequence hashmix (uint32 in int64): returns (value, next hash const)."""
+    v = v ^ hc
+    hc = (hc * 0x931E8875) & M32
+    v = (v * hc) & M32
+    return v ^ (v >> 16), hc
+
+
+@triton.jit
+def _mx(x, y):
+    r = (0xCA01F9DD * x - 0x4973F715 * y) & M32
+    return r ^ (r >> 16)
+
+
+@triton.jit
+def _seed_state(seed, t):
+    """numpy PCG64(SeedSequence([SEED_BASE, seed, t])).state as uint64 (state hi, lo, inc hi, lo); seed, t < 2^32.
+    SeedSequence.mix_entropy (pool of 4) -> generate_state(4, uint64) -> pcg64_set_seed."""
+    p0, hc = _hm(seed * 0 + SEEDB, seed * 0 + 0x43B0D7E5)
+    p1, hc = _hm(seed, hc)
+    p2, hc = _hm(t, hc)
+    p3, hc = _hm(seed * 0, hc)
+    h, hc = _hm(p0, hc)
+    p1 = _mx(p1, h)
+    p2 = _mx(p2, h)
+    p3 = _mx(p3, h)
+    h, hc = _hm(p1, hc)
+    p0 = _mx(p0, h)
+    p2 = _mx(p2, h)
+    p3 = _mx(p3, h)
+    h, hc = _hm(p2, hc)
+    p0 = _mx(p0, h)
+    p1 = _mx(p1, h)
+    p3 = _mx(p3, h)
+    h, hc = _hm(p3, hc)
+    p0 = _mx(p0, h)
+    p1 = _mx(p1, h)
+    p2 = _mx(p2, h)
+    hb = seed * 0 + 0x8B51F9DD
+    o0 = (p0 ^ hb)
+    hb = (hb * 0x58F38DED) & M32
+    o0 = (o0 * hb) & M32
+    o0 = o0 ^ (o0 >> 16)
+    o1 = (p1 ^ hb)
+    hb = (hb * 0x58F38DED) & M32
+    o1 = (o1 * hb) & M32
+    o1 = o1 ^ (o1 >> 16)
+    o2 = (p2 ^ hb)
+    hb = (hb * 0x58F38DED) & M32
+    o2 = (o2 * hb) & M32
+    o2 = o2 ^ (o2 >> 16)
+    o3 = (p3 ^ hb)
+    hb = (hb * 0x58F38DED) & M32
+    o3 = (o3 * hb) & M32
+    o3 = o3 ^ (o3 >> 16)
+    o4 = (p0 ^ hb)
+    hb = (hb * 0x58F38DED) & M32
+    o4 = (o4 * hb) & M32
+    o4 = o4 ^ (o4 >> 16)
+    o5 = (p1 ^ hb)
+    hb = (hb * 0x58F38DED) & M32
+    o5 = (o5 * hb) & M32
+    o5 = o5 ^ (o5 >> 16)
+    o6 = (p2 ^ hb)
+    hb = (hb * 0x58F38DED) & M32
+    o6 = (o6 * hb) & M32
+    o6 = o6 ^ (o6 >> 16)
+    o7 = (p3 ^ hb)
+    hb = (hb * 0x58F38DED) & M32
+    o7 = (o7 * hb) & M32
+    o7 = o7 ^ (o7 >> 16)
+    w0 = (o0 | (o1 << 32)).to(tl.uint64, bitcast=True)
+    w1 = (o2 | (o3 << 32)).to(tl.uint64, bitcast=True)
+    w2 = (o4 | (o5 << 32)).to(tl.uint64, bitcast=True)
+    w3 = (o6 | (o7 << 32)).to(tl.uint64, bitcast=True)
+    il = (w3 << 1) | 1                                    # inc = (initseq << 1) | 1
+    ih = (w2 << 1) | (w3 >> 63)
+    lo = il + w1                                          # state = inc + initstate
+    hi = ih + w0 + (((il & w1) | ((il | w1) & ~lo)) >> 63)
+    ml = w1 * 0 + MULT_L                                  # state = state * MULT + inc
+    mh = w1 * 0 + MULT_H
+    lo2 = lo * ml
+    hi2 = _mulhi(lo, ml) + lo * mh + hi * ml
+    sl = lo2 + il
+    sh = hi2 + ih + (((lo2 & il) | ((lo2 | il) & ~sl)) >> 63)
+    return sh, sl, ih, il
+
 
 @triton.jit
 def _ln_q(n, lnt_ptr):
@@ -100,19 +194,25 @@ def _head_kernel(c_ptr, m_ptr, fmsh_ptr, mant_ptr, e_ptr, out_ptr, pmax, pidx, M
 
 @triton.jit
 def _noise_kernel(c_ptr, m_ptr, fmsh_ptr, mant_ptr, e_ptr, st_ptr, tab_ptr, lnt_ptr, pmax, pidx, M, V, CH, NCH,
-                  BLOCK: tl.constexpr):
+                  out_ptr, BLOCK: tl.constexpr, SEEDED: tl.constexpr, FILL: tl.constexpr):
     row = tl.program_id(0)
     ch = tl.program_id(1)
     fmsh = tl.load(fmsh_ptr)
     mant = tl.load(mant_ptr + row)
     e = tl.load(e_ptr + row)
-    sp = st_ptr + row.to(tl.int64) * 6
-    tn = tl.load(sp + 4)
-    td = tl.load(sp + 5)
-    sh = tl.load(sp).to(tl.uint64, bitcast=True)
-    sl = tl.load(sp + 1).to(tl.uint64, bitcast=True)
-    ch_ = tl.load(sp + 2).to(tl.uint64, bitcast=True)
-    cl = tl.load(sp + 3).to(tl.uint64, bitcast=True)
+    if SEEDED:      # st [M, 4] = seed, t, tn, td: the PCG state is derived here (_seed_state)
+        sp = st_ptr + row.to(tl.int64) * 4
+        tn = tl.load(sp + 2)
+        td = tl.load(sp + 3)
+        sh, sl, ch_, cl = _seed_state(tl.load(sp), tl.load(sp + 1))
+    else:           # st [M, 6] = PCG state hi, lo, inc hi, lo, tn, td (row_state)
+        sp = st_ptr + row.to(tl.int64) * 6
+        tn = tl.load(sp + 4)
+        td = tl.load(sp + 5)
+        sh = tl.load(sp).to(tl.uint64, bitcast=True)
+        sl = tl.load(sp + 1).to(tl.uint64, bitcast=True)
+        ch_ = tl.load(sp + 2).to(tl.uint64, bitcast=True)
+        cl = tl.load(sp + 3).to(tl.uint64, bitcast=True)
     lane = tl.arange(0, BLOCK)
     vmax = tl.full([BLOCK], IMINI, tl.int64)
     vidx = tl.full([BLOCK], BIGI, tl.int64)
@@ -120,6 +220,8 @@ def _noise_kernel(c_ptr, m_ptr, fmsh_ptr, mant_ptr, e_ptr, st_ptr, tab_ptr, lnt_
         col = c0 + lane
         ok = col < V
         _, x = _y(c_ptr, m_ptr, col, ok, row, M, V, fmsh, mant, e)
+        if FILL:         # vLLM's logits row: -inf here, 0 at the chosen token (_comb_kernel)
+            tl.store(out_ptr + row.to(tl.int64) * V + col, tl.full([BLOCK], NEG_INF, tl.float32), mask=ok)
         if tn == 0:
             v = x
         else:
@@ -220,17 +322,51 @@ def row_state(keys, temps):
     return st
 
 
-def noisy(h, st, lnt, block=1024):
-    """Gumbel-max token per row: st from row_state. Same tokens as sampling.sample(li, tn, td, gumbel(raw, ...))."""
+class _Ring:
+    """Pinned host staging for the per-step row state: a ring, so a buffer is rewritten only after its copy to the
+    device has run (event); no pinned allocation per step."""
+    N = 4
+
+    def __init__(self):
+        self.buf, self.ev, self.i = {}, {}, 0
+
+    def put(self, a, dev):
+        """numpy int64 [n, k] -> device int64 [n, k] (async copy)."""
+        n, k = a.shape
+        key = (k, dev)
+        if key not in self.buf:
+            self.buf[key] = [torch.empty(4096, k, dtype=torch.long).pin_memory() for _ in range(self.N)]
+            self.ev[key] = [None] * self.N
+        self.i = (self.i + 1) % self.N
+        b, e = self.buf[key][self.i], self.ev[key][self.i]
+        if e is not None:
+            e.synchronize()
+        b[:n].numpy()[:] = a
+        d = b[:n].to(dev, non_blocking=True)
+        e = self.ev[key][self.i] = torch.cuda.Event()
+        e.record()
+        return d
+
+
+_RING = _Ring()
+
+
+def noisy(h, st, lnt, block=1024, out=None):
+    """Gumbel-max token per row: st from row_state (CPU int64 [n, 6]) or int64 [n, 4] seed, t, tn, td (numpy, seeds
+    and t below 2^32: the PCG state is derived in the kernel). Same tokens as sampling.sample(li, tn, td,
+    gumbel(raw, ...)). out: vLLM's float logits [M, V]; if given it is left as -inf rows with 0 at the token."""
     M, V = h.M, h.V
     dev = h.c.device
     ch, nch = _plan(M, V, block)
-    st = st.pin_memory().to(dev, non_blocking=True)
+    st = _RING.put(st.numpy() if torch.is_tensor(st) else st, dev)
     pmax = torch.empty(M, nch, dtype=torch.long, device=dev)
     pidx = torch.empty_like(pmax)
     y = torch.empty(M, dtype=torch.long, device=dev)
     if M:
+        fill = out is not None
         _noise_kernel[(M, nch)](h.c, h.m, h.fmsh, h.mant, h.e, st, gpu_pcg._tables(dev), lnt, pmax, pidx, M, V,
-                                ch, nch, BLOCK=block, num_warps=8)
-        _comb_kernel[(M,)](pmax, pidx, y, h.c, V, nch, NB=triton.next_power_of_2(nch), ONEHOT=False)
+                                ch, nch, out if fill else h.c, BLOCK=block, SEEDED=st.shape[1] == 4, FILL=fill,
+                                num_warps=8)
+        _comb_kernel[(M,)](pmax, pidx, y, out if fill else h.c, V, nch, NB=triton.next_power_of_2(nch),
+                           ONEHOT=fill)
     return y

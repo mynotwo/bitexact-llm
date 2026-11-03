@@ -176,10 +176,17 @@ def test_tri_sample_noisy_exact(M):
         h = _head_case(M, V, M + scale, scale)
         li = _head_ref(h)
         keys = [(int(s), int(t)) for s, t in zip(rng.integers(0, 2**31, M), rng.integers(0, 4096, M))]
+        keys[:3] = [(0, 0), (2**32 - 1, 2**32 - 1), (1, 2**32 - 1)][:M]
         for temps in ([(1, 1)] * M, [(0, 1)] * M, [(2, 3), (7, 10), (1, 10), (0, 1), (3, 2), (1, 100), (100, 1)] * 20,
                       [(1, 1), (0, 1)] * 70):
             temps = temps[:M]
             got = tri_sample.noisy(h, tri_sample.row_state(keys, temps), lnt)
+            st4 = np.array([[s, t, tn, td] for (s, t), (tn, td) in zip(keys, temps)], dtype=np.int64)
+            out = torch.empty(M, V, dtype=torch.float32, device="cuda")
+            got4 = tri_sample.noisy(h, st4, lnt, out=out)        # PCG state derived in the kernel, logits written
+            want = torch.full_like(out, float("-inf"))
+            want.scatter_(1, got[:, None], 0.0)
+            assert torch.equal(got4, got) and torch.equal(out, want), (M, scale, temps)
             raw = sampling.raw_rows(keys).cuda()
             for r, (tn, td) in enumerate(temps):
                 ref = sampling.sample(li[r:r + 1], tn, td, sampling.gumbel(raw[r:r + 1], lnt, FR) if tn else None)
