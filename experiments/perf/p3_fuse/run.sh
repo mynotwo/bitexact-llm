@@ -71,7 +71,7 @@ hcmp() { if cmp -s $1.hash $2.hash; then echo "cmp OK $(basename $2).hash"; else
 
 pytest() { D=$O/pytest; mkdir -p $D
   run $D/pytest.log 3600 repo env BITEXACT_INT8_CONST=$CONST $PY -m pytest -q -x tests/test_gpu_kernels.py \
-    tests/test_vllm_kernels.py tests/test_int8_ops.py tests/vllm/test_decode_paths.py tests/vllm/test_overflow_check.py
+    tests/test_vllm_kernels.py tests/test_tri_fuse.py tests/test_int8_ops.py tests/vllm/test_decode_paths.py tests/vllm/test_overflow_check.py
   tail -3 $D/pytest.log | tee -a $SUM; }
 
 smoke() { D=$O/smoke; mkdir -p $D
@@ -82,6 +82,10 @@ smoke() { D=$O/smoke; mkdir -p $D
   done
   cmp_tree $D/base_ref $D/base_alone_vllmgraph $D/repo_alone_vllmgraph
   hcmp $D/base_alone_vllmgraph $D/repo_alone_vllmgraph; }
+
+unit() { D=$O/unit; mkdir -p $D
+  run $D/unit.log 3600 repo env BITEXACT_INT8_CONST=$CONST $PY -m pytest -q -x tests/test_tri_fuse.py tests/vllm/test_decode_paths.py
+  tail -30 $D/unit.log | tee -a $SUM; }
 
 suite() { D=$O/suite; mkdir -p $D
   for t in base repo; do
