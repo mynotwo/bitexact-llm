@@ -365,7 +365,7 @@ def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=None, warps=4):
     q = q.contiguous()
     qpos = qpos.contiguous()
     if M <= DEC_BQ and bm is None:
-        return _attend_dec(q, qpos, cache, bt, ptab, nsplit, bn or (64 if R >= 64 else 128), warps)   # 64: less masked tile at short contexts
+        return _attend_dec(q, qpos, cache, bt, ptab, nsplit, bn or 64, warps)  # 64 beats 128 at every R once contexts are long (p3_splitkv sweep)
     BM = bm or (16 if M <= 16 else 64)
     bn = bn or 64
     tiles = triton.cdiv(M, BM) * R * HKV
