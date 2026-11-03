@@ -72,7 +72,7 @@ def test_qkv_store_exact(m, M):
         mant, e = _pre(m, M, g)
         pos = torch.randint(0, 2000, (M,), device="cuda", generator=g)
         slot = torch.randperm(nb * bs, device="cuda", generator=g)[:M]
-        slot[::5] = 0
+        slot[::5] = -1                       # skipped rows (padding)
         y = m.sg.post(c, lin[1], lin[2], mant, e)[0].view(M, 1, -1)
         qg, k, v, flag = m.sg.qkv(y, m.cos[pos][:, None, None], m.sin[pos][:, None, None])
         ref_c = torch.zeros(nb, HKV, bs, 8 * HD, dtype=torch.int8, device="cuda")
