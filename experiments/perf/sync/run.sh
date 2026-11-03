@@ -59,7 +59,7 @@ if [ -z "${GPU:-}" ]; then
   w=0; while :; do for g in 0 1 7; do free $g && GPU=$g && break 2; done
     [ $w -ge $MAXWAIT ] && { echo "FAIL no free GPU"; exit 2; }; sleep 60; w=$((w + 60)); done
 fi
-case " 2 3 4 5 6 " in *" $GPU "*) echo "GPU $GPU belongs to others"; exit 2;; esac
+case " 4 5 6 " in *" $GPU "*) echo "GPU $GPU belongs to others"; exit 2;; esac
 echo "$(date +%T) GPU $GPU, stages: $STAGES, branch $(cat $S/repo/SYNCED_COMMIT), base $(cat $S/base/SYNCED_COMMIT)" | tee -a $SUM
 
 wait_gpu() { w=0; while ! free $GPU; do

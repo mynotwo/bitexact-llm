@@ -113,3 +113,74 @@ def test_tri_mlp_silu_quant_exact(M):
             assert r.dtype == o.dtype and torch.equal(r, o), (M, mb, fm)
         rf = ref[3] if f1 is None else ref[3] | f1
         assert bool(rf) == bool(got[3]), (M, mb, fm, bool(rf))
+
+
+def _head_case(M, V, seed, scale):
+    from bitexact.vllm_plugin import tri_sample
+    g = torch.Generator(device="cuda").manual_seed(seed)
+    c = torch.randint(-scale, scale, (2 * M + 24, V), device="cuda", generator=g).to(torch.int32)
+    m = torch.randint(-(1 << 22), 1 << 22, (V,), device="cuda", generator=g)
+    mant = torch.randint(1 << 23, (1 << 24) + 1, (M,), device="cuda", generator=g)
+    e = torch.randint(-6, 6, (M,), device="cuda", generator=g)
+    fmsh = torch.tensor(26, device="cuda")
+    return tri_sample.Head(c, m, fmsh, mant, e)
+
+
+def _head_ref(h):
+    from bitexact.int8.segs import post
+    from bitexact.intops import join_limbs
+    return post(join_limbs(h.c, h.M, 2), h.m, h.fmsh, h.mant, h.e, False)[0]
+
+
+@pytest.mark.parametrize("M", [1, 5, 128])
+def test_tri_sample_head_exact(M):
+    from bitexact.intops import first_argmax
+    from bitexact.vllm_plugin import tri_sample
+    for V, scale in [(128256, 1 << 18), (128256, 1 << 29), (5000, 3), (1023, 1 << 29)]:
+        h = _head_case(M, V, M + V, scale)
+        li = _head_ref(h)
+        assert int(li.abs().max()) > 0
+        ref = first_argmax(li)
+        for mode in ("float", "onehot", "none"):
+            f, y = tri_sample.head(h, mode)
+            assert torch.equal(y, ref), (M, V, mode)
+            if mode == "float":
+                assert torch.equal(f.view(torch.int32), (li.float() * (2.0 ** -16)).view(torch.int32))
+            if mode == "onehot":
+                want = torch.full_like(f, float("-inf"))
+                want.scatter_(1, ref[:, None], 0.0)
+                assert torch.equal(f, want)
+
+
+def test_tri_sample_ties_first_index():
+    from bitexact.intops import first_argmax
+    from bitexact.vllm_plugin import tri_sample
+    h = _head_case(4, 128256, 9, 1 << 12)
+    h.c[:] = 0
+    h.c[0, [777, 100000, 5]] = 1000                        # row 0: tie, first is 5
+    h.m[:] = 1
+    li = _head_ref(h)
+    assert torch.equal(tri_sample.head(h, "none")[1], first_argmax(li))
+    assert int(tri_sample.head(h, "none")[1][1]) == 0      # all zeros: index 0
+
+
+@pytest.mark.parametrize("M", [1, 7, 128])
+def test_tri_sample_noisy_exact(M):
+    from bitexact import sampling
+    from bitexact.int8.consts import FR
+    from bitexact.llama import V, ln_table
+    from bitexact.vllm_plugin import tri_sample
+    lnt = ln_table().cuda()
+    rng = np.random.default_rng(M)
+    for scale in (1 << 18, 1 << 29):
+        h = _head_case(M, V, M + scale, scale)
+        li = _head_ref(h)
+        keys = [(int(s), int(t)) for s, t in zip(rng.integers(0, 2**31, M), rng.integers(0, 4096, M))]
+        for temps in ([(1, 1)] * M, [(0, 1)] * M, [(2, 3), (7, 10), (1, 10), (0, 1), (3, 2), (1, 100), (100, 1)] * 20,
+                      [(1, 1), (0, 1)] * 70):
+            temps = temps[:M]
+            got = tri_sample.noisy(h, tri_sample.row_state(keys, temps), lnt)
+            raw = sampling.raw_rows(keys).cuda()
+            for r, (tn, td) in enumerate(temps):
+                ref = sampling.sample(li[r:r + 1], tn, td, sampling.gumbel(raw[r:r + 1], lnt, FR) if tn else None)
+                assert int(got[r]) == int(ref[0]), (M, scale, temps[r], r)
