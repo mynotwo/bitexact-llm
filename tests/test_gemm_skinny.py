@@ -8,9 +8,9 @@ pytestmark = pytest.mark.gpu
 def test_skinny_equals_int_mm():
     from bitexact.int8.gemm_skinny import TABLE, int_mm
     g = torch.Generator(device="cuda").manual_seed(0)
-    for (N, K) in list(TABLE) + [(128256, 2048)]:
+    for (N, K) in set(TABLE) | {(128256, 2048)}:
         w = torch.randint(-128, 128, (N, K), dtype=torch.int8, device="cuda", generator=g)
-        for R in (24, 32, 56, 64, 72, 128, 200, 256, 264, 384):
+        for R in (24, 32, 56, 64, 72, 100, 128, 200, 256, 264, 384):
             for kind in ("rand", "max", "min"):
                 a = torch.randint(-128, 128, (R, K), dtype=torch.int8, device="cuda", generator=g)
                 if kind == "max":
