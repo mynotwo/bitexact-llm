@@ -8,6 +8,8 @@ import torch
 import triton
 import triton.language as tl
 
+from bitexact.int8.gemm_lt import int_mm as lt_int_mm
+
 
 @triton.jit
 def _k(a_ptr, w_ptr, c_ptr, R, N, K, BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr,
@@ -46,7 +48,7 @@ def gemm(a, w, cfg):
 
 
 # (N, K) -> [(max_rows, cfg)] chosen offline (experiments/perf/p2_gemm/search_graph.py, H800, CUDA-graph timing, cold weights).
-# Shapes / row buckets not listed (LM head, rows > 256, non-CUDA) stay on torch._int_mm.
+# Shapes / row buckets not listed: rows > 256 go to gemm_lt (cuBLASLt), the rest (decode LM head) to torch._int_mm.
 TABLE = {
     (3072, 2048): [(24, (32, 32, 256, 1, 4, 4)), (64, (32, 64, 256, 1, 8, 4)), (256, (64, 64, 128, 1, 4, 5))],
     (2048, 2048): [(24, (16, 32, 256, 1, 4, 5)), (64, (32, 32, 256, 1, 4, 5)), (256, (64, 64, 256, 1, 4, 4))],
@@ -55,11 +57,15 @@ TABLE = {
 }
 
 
-def int_mm(a, w):
-    """Exact int32 a @ w.t(); skinny Triton kernel where the table has a faster config, else torch._int_mm."""
+def int_mm(a, w, lt=True):
+    """Exact int32 a @ w.t(); skinny Triton kernel where the table has a faster config; else, above 256 rows and with
+    lt, cuBLASLt with a workspace (gemm_lt; BITEXACT_GEMM=intmm: torch._int_mm); else torch._int_mm. All give the
+    same integers."""
     rows = TABLE.get((w.shape[0], w.shape[1]))
     if rows is not None and a.shape[0] <= 256 and a.is_contiguous() and w.is_contiguous():
         for mx, cfg in rows:
             if a.shape[0] <= mx:
                 return gemm(a, w, cfg)
+    if lt and a.shape[0] > 256:     # scorer / prefill rows: cuBLASLt's sm90 kernels (decode rows: measured slower,
+        return lt_int_mm(a, w)      # experiments/speed_on_main/RESULTS.md)
     return torch._int_mm(a, w.t())

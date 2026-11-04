@@ -78,6 +78,9 @@ class BitExactLlamaForCausalLM(nn.Module):
         self.m = IntLlama(c, dev, nl=int(getattr(cfg, "bitexact_nl", 2)),
                           compiled=bool(int(os.environ.get("BITEXACT_COMPILE", "1"))))
         self.m.ptab = tri_paged.weight_table(self.m.exp)
+        # Prefill GEMMs stay on torch._int_mm: in vLLM, cuBLASLt measured 4-6% lower tok/s (new row counts each step
+        # and per-call host cost; experiments/speed_on_main/RESULTS.md). BITEXACT_PLUGIN_LT=1 turns it on.
+        self.m.lt = os.environ.get("BITEXACT_PLUGIN_LT", "0") == "1"
         # Plugin-side graphs only when vLLM's own are off (enforce_eager); otherwise vLLM captures
         # uniform decode batches through _captured_decode.
         self.use_graphs = bool(int(os.environ.get("BITEXACT_GRAPHS", "1"))) and \

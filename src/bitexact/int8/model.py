@@ -74,6 +74,7 @@ class IntLlama:
         self.post_check = any(post_bound(w, m, int(f), nl) >= 1 << 38 for w, m, f in lins)
         self.sg = Segs(nl, self.dev.type == "cuda", compiled, self.post_check, (self.H, self.HKV, self.HD))
         self._w64 = {}                                      # CPU: float64 copies of the int8 weights
+        self.lt = True                                  # cuBLASLt for GEMMs above 256 rows (the plugin turns it off)
         if self.fused:
             from bitexact.vllm_plugin import tri_paged
             self.ptab = tri_paged.weight_table(self.exp)
@@ -88,7 +89,7 @@ class IntLlama:
 
     def _gemm(self, a, w):
         if a.is_cuda:
-            return int_mm(a, w)                             # int8 limbs, int32 accumulation: exact (_int_mm or skinny Triton)
+            return int_mm(a, w, self.lt)    # int8 limbs, int32 accumulation: exact (skinny Triton, cuBLASLt or _int_mm)
         if w.data_ptr() not in self._w64:
             self._w64[w.data_ptr()] = w.double().t().contiguous()
         return imm(a, self._w64[w.data_ptr()])              # float64, exact
