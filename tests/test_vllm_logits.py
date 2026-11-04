@@ -96,7 +96,8 @@ def test_overflow_on_last_step_never_returns_tokens():
     """An overflow flagged on the last step must fail before that step's tokens reach the host."""
     import os
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join([root, os.path.join(root, "src"), os.environ.get("PYTHONPATH", "")]))
+    path = [root, os.path.join(root, "src"), os.environ.get("PYTHONPATH", "")]
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(path))
     r = subprocess.run([sys.executable, "-c", _LAST_STEP], capture_output=True, text=True, env=env, cwd=root)
     assert r.returncode != 0
     assert r.stdout.count("sampled") == 2, r.stdout + r.stderr          # steps 0 and 1 only
