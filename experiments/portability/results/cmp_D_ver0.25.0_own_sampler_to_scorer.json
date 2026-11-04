@@ -1,0 +1,29 @@
+{
+ "name": "D_ver0.25.0_own_sampler_to_scorer",
+ "test": "version_control",
+ "arm": "D",
+ "ref": "/home/audreymao/portability/out/D_t1_v0.25.0.json",
+ "x": "/home/audreymao/portability/out/Ds_own_v0.25.0.json",
+ "kind": "score",
+ "seqs": 256,
+ "seqs_identical": 256,
+ "tokens_compared": 54938,
+ "tokens_ref": 54938,
+ "lp_differ": 0,
+ "lp_differ_frac": 0.0,
+ "mean_abs_d": 0.0,
+ "max_abs_d": 0.0,
+ "sha_compared": 0,
+ "sha_differ": 0,
+ "n_diverged": 0,
+ "status": "ok",
+ "bitwise": true,
+ "x_meta": {
+  "vllm": "0.25.0",
+  "torch": "2.11.0+cu130",
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "tp": 1,
+  "max_seqs": 128,
+  "dtype": "bfloat16"
+ }
+}

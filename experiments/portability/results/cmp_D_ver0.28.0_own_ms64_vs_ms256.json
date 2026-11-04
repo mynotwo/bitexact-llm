@@ -1,0 +1,32 @@
+{
+ "name": "D_ver0.28.0_own_ms64_vs_ms256",
+ "test": "version_control",
+ "arm": "D",
+ "ref": "/home/audreymao/portability/out/D_t1_v0.28.0.json",
+ "x": "/home/audreymao/portability/out/D_t1_v0.28.0_ms64.json",
+ "kind": "sample",
+ "seqs": 256,
+ "seqs_identical": 256,
+ "tokens_compared": 55024,
+ "tokens_ref": 55024,
+ "lp_differ": 0,
+ "lp_differ_frac": 0.0,
+ "mean_abs_d": 0.0,
+ "max_abs_d": 0.0,
+ "sha_compared": 0,
+ "sha_differ": 0,
+ "median_first_div": null,
+ "n_diverged": 0,
+ "status": "ok",
+ "bitwise": true,
+ "x_meta": {
+  "vllm": "0.28.0",
+  "torch": "2.13.0+cu130",
+  "cuda": "13.0",
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "tp": 1,
+  "max_seqs": 64,
+  "temp": 1.0,
+  "dtype": "bfloat16"
+ }
+}

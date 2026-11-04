@@ -1,0 +1,26 @@
+{
+ "name": "D_cpu_hf_bf16_vs_gpu",
+ "test": "cpu",
+ "arm": "D",
+ "ref": "/home/audreymao/portability/out/Ds_t1.json",
+ "x": "/home/audreymao/portability/out/Ds_t1_cpu_hf_bfloat16.json",
+ "kind": "score",
+ "seqs": 16,
+ "seqs_identical": 16,
+ "tokens_compared": 3017,
+ "tokens_ref": 3017,
+ "lp_differ": 3017,
+ "lp_differ_frac": 1.0,
+ "mean_abs_d": 0.025263915063421214,
+ "max_abs_d": 0.27909326553344727,
+ "sha_compared": 0,
+ "sha_differ": 0,
+ "n_diverged": 0,
+ "status": "ok",
+ "bitwise": false,
+ "x_meta": {
+  "torch": "2.13.0+cu130",
+  "dtype": "bfloat16",
+  "note": null
+ }
+}

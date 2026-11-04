@@ -1,0 +1,26 @@
+{
+ "name": "C_cpu_engine_vs_gpu_plugin",
+ "test": "cpu",
+ "arm": "C",
+ "ref": "/home/audreymao/portability/out/C_t1.json",
+ "x": "/home/audreymao/portability/out/Cs_t1_cpu.json",
+ "kind": "score",
+ "seqs": 16,
+ "seqs_identical": 16,
+ "tokens_compared": 3496,
+ "tokens_ref": 3496,
+ "lp_differ": 0,
+ "lp_differ_frac": 0.0,
+ "mean_abs_d": 0.0,
+ "max_abs_d": 0.0,
+ "sha_compared": 3496,
+ "sha_differ": 0,
+ "n_diverged": 0,
+ "status": "ok",
+ "bitwise": true,
+ "x_meta": {
+  "torch": "2.13.0+cu130",
+  "device_name": "cpu x32",
+  "bs": 4
+ }
+}

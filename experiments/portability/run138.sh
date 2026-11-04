@@ -40,13 +40,25 @@ ver)
     dsamp $V D_t1_v$v; dsamp $V D_t0_v$v --temp 0; dscore $V Ds_t1_v$v D_t1
     csamp $V C_t1_v$v; csamp $V C_t0_v$v --temp 0; cscore $V Cs_t1_v$v C_t1 --device cuda --bs 8
   done ;;
+verx)  # within-version controls for the older versions: batch invariance and sampler -> scorer inside each version
+  for v in ${VERS:-0.25.0 0.28.0}; do
+    V=$P/venv_$v/bin/python
+    dsamp $V D_t1_v${v}_ms64 --max-seqs 64; dscore $V Ds_own_v$v D_t1_v$v
+  done ;;
 cpu)
   waitf $O/C_t1.json; waitf $O/D_t1.json
   cscore $PY Cs_t1_cpu C_t1 --device cpu --bs 4 --threads 32 --seeds-from $X/seeds16.txt
   for dt in bfloat16 float32; do
-    step $O/Ds_t1_cpu_hf_$dt.json $BI $PY $X/score_cpu_float.py --rollout $O/D_t1.json --model $DEQ --data $DATA --dtype $dt --seeds-from $X/seeds16.txt --batch-invariant --out $O/Ds_t1_cpu_hf_$dt.json
+    # attempt 1: vLLM's batch-invariant initialiser on a CPU-only process (aborts: it calls CUDA kernels)
+    step $O/Ds_t1_cpu_hfbi_$dt.json $BI $PY $X/score_cpu_float.py --rollout $O/D_t1.json --model $DEQ --data $DATA --dtype $dt --seeds-from $X/seeds16.txt --batch-invariant --out $O/Ds_t1_cpu_hfbi_$dt.json
+    # attempt 2: plain PyTorch CPU (HF transformers, eager attention, batch 1)
+    step $O/Ds_t1_cpu_hf_$dt.json $PY $X/score_cpu_float.py --rollout $O/D_t1.json --model $DEQ --data $DATA --dtype $dt --seeds-from $X/seeds16.txt --out $O/Ds_t1_cpu_hf_$dt.json
   done
   # vLLM CPU attempt with the installed (CUDA) wheel, no GPU visible
   step $O/Ds_t1_cpu_vllm.json env CUDA_VISIBLE_DEVICES= VLLM_BATCH_INVARIANT=1 $PY $X/score_d.py --rollout $O/D_t1.json --model $DEQ --data $DATA --max-seqs 8 --dtype bfloat16 --out $O/Ds_t1_cpu_vllm.json ;;
 esac
 echo "LANEDONE $LANE"
+# Plugin under TP 2 (run by hand after the tp lane: in-process registration does not reach TP worker processes,
+# so bitexact was installed with `pip install --no-deps -e code` into the experiment's own venv_0.31.0):
+#   CUDA_VISIBLE_DEVICES=6,7 venv_0.31.0/bin/python $X/sample.py --engine bitexact --model $INT --data $DATA \
+#       --n-prompts 32 --g 8 --tp 2 --out $O/C_t1_tp2_inst.json
