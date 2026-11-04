@@ -33,6 +33,7 @@ from vllm.v1.worker.gpu.sample.logits_processor import LogitsProcessor
 from bitexact.int8.consts import FR
 from bitexact.intops import first_argmax
 from bitexact.vllm_plugin import tri_sample
+from bitexact.vllm_plugin.rl import RL, int_logp
 from bitexact.sampling import gumbel, sample, temp_ratio
 
 
@@ -184,6 +185,8 @@ class IntSampler(LogitsProcessor):
             assert logits.is_contiguous()
             st = tri_sample.row_state(keys, temps) if wide else np.stack([seeds, np.maximum(ts, 0), tn, td], 1)
             y = tri_sample.noisy(head, st, self.lnt, out=logits)
+        if RL.lp is not None:                            # RL runs: exact integer log p of the sampled tokens
+            RL.lp.append((seeds, ts, int_logp(head.logits() if li is None else li, y, self.lnt)))
         if self.log:
             li = head.logits() if li is None else li
             pos = ctx.pos.tolist()
