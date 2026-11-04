@@ -76,7 +76,7 @@ Cost of fix 1, decode ms/step (same host, T = 1, vLLM CUDA graphs, one H100 each
 
 The assert costs nothing measurable (within the 0.8% spread between GPUs); the synchronous check would cost +1.5 ms/step at B=1 and +3.1 ms/step at B=64.
 
-Gates on the final tree (138, H100): scorer 8 / 8 configurations (rows equal plugin hash, sequence hashes and float64 log p bits equal to the eager reference); decode T = 1 (53,387 tokens) and greedy (65,536 tokens), B=1 and B=64, 256 sequences each: 0 sequences differ from `base`, B=1 equals B=64 (GATE PASS, `BITEXACT_VERIFY_HOST_ROWS=1`). Full test suite and `ruff check` on `src tests experiments/speed`: see the commit log of the push.
+Gates on the final tree (138, H100): scorer 8 / 8 configurations (rows equal plugin hash, sequence hashes and float64 log p bits equal to the eager reference); decode T = 1 (53,387 tokens) and greedy (65,536 tokens), B=1 and B=64, 256 sequences each: 0 sequences differ from `base`, B=1 equals B=64 (GATE PASS, `BITEXACT_VERIFY_HOST_ROWS=1`). Full test suite on 138: 81 passed, 5 skipped, 2 failed (`tests/vllm/test_decode_paths.py::test_decode_eager` / `test_decode_cuda_graph`: `AttributeError: 'Cache' object has no attribute 'c'` at `int8/model.py:114`; the same two fail on the item-b tree, so they are not from these fixes; `int8/model.py` is outside this write-set). `ruff check src tests experiments/speed` clean.
 
 ## Not done
 
