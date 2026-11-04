@@ -95,12 +95,12 @@ class BitExactLlamaForCausalLM(nn.Module):
         # host copy of the bound-violation flag, read as each step's output reaches the host (_check_on_output)
         self.flag = torch.zeros((), dtype=torch.bool, device="cpu", pin_memory=torch.cuda.is_available())
         del c
-        # Attention layers only to get vLLM's KV cache: HKV heads x 2 HD bf16 per token (= K | V as 2 HD int32,
-        # 8 HD bytes: 3 int8 limb planes each, tri_paged.py).
+        # Attention layers only to get vLLM's KV cache: HKV heads x 2 x (3 HD / 2) bf16 per token = 6 HD bytes, exactly
+        # the 3 int8 limb planes of K and of V (tri_paged.py), so vLLM sizes the cache at 6 HD instead of 8 HD bytes.
         m = self.m
         self.qdim = m.H * m.HD
         self.attn = nn.ModuleList([
-            Attention(num_heads=m.HKV, head_size=2 * m.HD, scale=1.0, num_kv_heads=m.HKV,
+            Attention(num_heads=m.HKV, head_size=paged.kv_head_size(m.HD), scale=1.0, num_kv_heads=m.HKV,
                       cache_config=vllm_config.cache_config, prefix=f"model.layers.{i}.self_attn.attn")
             for i in range(self.m.L)])
         self.layer0 = "model.layers.0.self_attn.attn"

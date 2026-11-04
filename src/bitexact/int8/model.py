@@ -23,12 +23,12 @@ from bitexact.llama import Cache, dims
 
 
 class PagedCache:
-    """K | V of every layer in the plugin's paged limb-plane layout (tri_paged.store): int8 [B * nbl, HKV, bs, 8 HD],
+    """K | V of every layer in the plugin's paged limb-plane layout (tri_paged.store): int8 [B * nbl, HKV, bs, 6 HD],
     row b owns blocks b * nbl .. (b + 1) * nbl - 1 (what tri_paged.attend reads in place)."""
 
     def __init__(self, n_layers, B, L, device, hkv, hd, bs=16):
         self.bs, self.nbl = bs, -(-L // bs)
-        self.c = [torch.zeros(B * self.nbl, hkv, bs, 8 * hd, dtype=torch.int8, device=device) for _ in range(n_layers)]
+        self.c = [torch.zeros(B * self.nbl, hkv, bs, 6 * hd, dtype=torch.int8, device=device) for _ in range(n_layers)]
         self.bt = torch.arange(B * self.nbl, device=device).view(B, self.nbl)
 
     def write(self, layer, k, v, pos):

@@ -172,7 +172,7 @@ class Scorer:
     def _cache(self, NB):
         m = self.m
         if not self.c or self.c[0].shape[0] < NB:                          # stale blocks are never read: no zeroing
-            self.c = [torch.zeros(NB, m.HKV, self.bs, 8 * m.HD, dtype=torch.int8, device=m.dev) for _ in range(m.L)]
+            self.c = [torch.zeros(NB, m.HKV, self.bs, 6 * m.HD, dtype=torch.int8, device=m.dev) for _ in range(m.L)]
 
     def score(self, batch, want_hash=False):
         """batch: [(prompt ids, response ids)] -> [(log p float64 [len(response)], row hashes or None)].

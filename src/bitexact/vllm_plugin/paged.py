@@ -1,10 +1,10 @@
 """Integer attention on vLLM's paged KV cache.
 
 vLLM allocates the KV cache for each layer from the Attention layer we declare (8 KV heads, head size
-128, bf16). vLLM 0.32 hands each layer a view [blocks, heads, block_size, K|V] with K and V of one head
-side by side in the last dim (2 * 128 bf16 = 512 bytes, unit stride). Viewed as int8 that last dim holds the
-int8 base-256 limbs of our integer K (FQ) and V (FV) of one KV head, 3 limbs each (tri_paged.py: 384 of the 512
-bytes). So vLLM's block manager, block tables, slot mapping and prefix cache drive our cache unchanged.
+3 HD / 2 = 96, bf16). vLLM 0.32 hands each layer a view [blocks, heads, block_size, K|V] with K and V of one head
+side by side in the last dim (2 * 96 bf16 = 384 bytes, unit stride). Viewed as int8 that last dim holds the
+int8 base-256 limbs of our integer K (FQ) and V (FV) of one KV head, 3 limbs each (tri_paged.py), and nothing
+else. So vLLM's block manager, block tables, slot mapping and prefix cache drive our cache unchanged.
 
 Why the result does not depend on scheduling: the K/V row of a token is a row-local integer function
 of the token and its position (same bits whether it came from a cached prefix block, an earlier prefill
@@ -98,8 +98,13 @@ def make_plan(meta, n_tokens, positions, qdim=H * HD):
                 pre=pre, pre_groups=_pre_groups(pre, positions, dev, qdim))
 
 
+def kv_head_size(hd):
+    """Head size (bf16 elements) to declare to vLLM: K | V of one head and token take 2 * 3 HD / 2 bf16 = 6 HD bytes."""
+    return 3 * hd // 2
+
+
 def kv_view(kv):
-    """vLLM's bf16 cache view [nb, HKV, bs, 2 * 2 * HD] -> int8 limb planes [nb, HKV, bs, 8 * HD] (tri_paged)."""
+    """vLLM's bf16 cache view [nb, HKV, bs, 2 * 3 HD / 2] -> int8 limb planes [nb, HKV, bs, 6 HD] (tri_paged)."""
     assert kv.dim() == 4 and kv.shape[3] % 4 == 0 and kv.stride(3) == 1, (kv.shape, kv.stride())
     return kv.view(torch.int8)
 

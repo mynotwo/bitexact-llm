@@ -19,10 +19,10 @@ need exp(a) * exp(b) == exp(a + b) on the quantized table, which does not hold, 
 not reproduce the engine's integers. Kernel 1 reads only K (no exp, no V).
 Keys are visited only up to the largest query position of the tile (read on the device), so the
 kernels need no host-side sequence lengths and are CUDA-graph safe.
-Cache layout: int8 limb planes per (block, KV head, slot) row of 512 bytes: K limbs 0, 1, 2 at bytes
-[0, 64), [64, 128), [128, 192), V limbs at [192, 384) (the rest is unused; the row stays the 512 bytes vLLM
-allocates). Limb i is the signed base-256 digit _split would produce of the int32 K / V value, so the kernels
-read 384 instead of 512 bytes per key and skip the splitting. `store` writes the planes.
+Cache layout: int8 limb planes per (block, KV head, slot) row of 6 HD bytes (384 for HD 64): K limbs 0, 1, 2 at
+bytes [0, 64), [64, 128), [128, 192), V limbs at [192, 384); a wider row (8 HD, to_limbs) is read the same way.
+Limb i is the signed base-256 digit _split would produce of the int32 K / V value, so the kernels read 384 instead
+of 512 bytes per key and skip the splitting. `store` writes the planes.
 Returns num (int64 [R, HKV, M, HD]) and den (int64 [R, HKV, M, 1]); the caller rounds num / den.
 """
 
@@ -336,7 +336,7 @@ def _store_kernel(c_ptr, slot_ptr, k_ptr, v_ptr, skz, skh, svz, svh, sc_nb, sc_h
 
 def store(c, slot, k, v):
     """Write K / V (int64 [N, HKV, HD], |.| within 3 limbs) of the tokens at cache slots slot [N] into the
-    limb-plane cache c (int8 [nb, HKV, bs, 512]); slot < 0 is skipped."""
+    limb-plane cache c (int8 [nb, HKV, bs, >= 6 HD]); slot < 0 is skipped."""
     N, hkv, hd = k.shape
     if N:
         _store_kernel[(N, hkv)](c, slot, k, v, k.stride(0), k.stride(1), v.stride(0), v.stride(1),
@@ -371,7 +371,7 @@ SM_TARGET = 264        # programs to aim for (2 per SM on H100 / H800)
 @torch.compiler.disable          # a graph break for torch.compile callers: the launch picks nsplit from shapes
 def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=None, warps=4):
     """q int64 [R, HKV, M, HD] (|q| within 3 limbs), qpos int64 [R, M] (key s visible to query i iff
-    s <= qpos[r, i]), cache int8 limb planes [nb, HKV, bs, 8 HD] (see `store`), bt [R, *] block-table rows, ptab = weight_table(exp table).
+    s <= qpos[r, i]), cache int8 limb planes [nb, HKV, bs, >= 6 HD] (see `store`), bt [R, *] block-table rows, ptab = weight_table(exp table).
     Returns num int64 [R, HKV, M, HD], den int64 [R, HKV, M, 1].
 
     Split-KV: each (query tile, request, head) is split into nsplit key ranges, computed on the device
@@ -384,7 +384,7 @@ def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=None, warps=4):
     R, nh, M, dh = q.shape
     zmul, zsh = score_rule(dh)
     HKV, HD = nh, dh
-    assert cache.shape[1] == nh and cache.shape[3] == 8 * dh and cache.stride(3) == 1 and bt.shape[1] * cache.shape[2] < 43690
+    assert cache.shape[1] == nh and cache.shape[3] >= 6 * dh and cache.stride(3) == 1 and bt.shape[1] * cache.shape[2] < 43690
     q = q.contiguous()
     qpos = qpos.contiguous()
     if M <= DEC_BQ and bm is None:
