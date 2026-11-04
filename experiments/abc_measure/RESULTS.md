@@ -116,7 +116,24 @@ d = log p_scorer - log p_sampler over the sampler's tokens, r = exp(d), clip = [
 
 1. **Q1.** C is exactly 0 (all 215,899 logits rows hash-identical to what the plugin sampled from, log p equal bit for bit). A and B with a bf16 scorer are the same size: mean |d| 0.0253 (A) vs 0.0241 (B), 66-73% of sequences outside the clip. B with an fp32 scorer is 20x smaller than A with an fp32 scorer (0.0012 vs 0.0227), no token and no sequence outside the clip, argmax differs on 0.08% of tokens (A: 2.1%). So an fp32 trainer already removes almost all of the mismatch for the integer sampler, but not for vLLM bf16.
 2. **Q2.** Per-token |d| does not grow with position for any arm (A bf16 0.0255 / 0.0226 / 0.0229 / 0.0254 over the four position buckets of the 16k run; B fp32 0.0012-0.0014). Sequence drift grows with length: A bf16 mean S = -0.22 / -0.82 / -3.7 / -12.8 at 256 / 1k / 4k / 16k tokens, i.e. systematically negative (the scorer gives the sampled tokens lower probability than the sampler did), and roughly linear in length (not the square-root growth of a random walk); B fp32 stays near zero-mean (mean |S| 0.03 / 0.05 / 0.10 / 0.19) and grows like a random walk; 3 of 8 B-fp32 sequences leave the clip at 16k tokens. At T = 4k and 16k, 88-100% of A and B-bf16 sequences are outside the clip.
-3. **Q4.** Plugin sampler is 2.9-4.8x slower than vLLM bf16 in tok/s, at batch 64 and 4k tokens 19.1k vs 4.0k tok/s. As a scorer, the engine runs 6.5k tok/s on the GSM8K rollouts: 19x slower than HF bf16 (122k) and 2.6x slower than HF fp32 (17k); at 4k-token sequences 3.6k vs 94k / 12.8k.
+3. **Q4 (A, B, C).** Plugin sampler is 2.9-4.8x slower than vLLM bf16 in tok/s, at batch 64 and 4k tokens 19.1k vs 4.0k tok/s. As a scorer, the engine runs 6.5k tok/s on the GSM8K rollouts: 19x slower than HF bf16 (122k) and 2.6x slower than HF fp32 (17k); at 4k-token sequences 3.6k vs 94k / 12.8k.
+4. **Arm D.** With `VLLM_BATCH_INVARIANT=1` and TRITON_ATTN, vLLM scoring its own rollouts with `prompt_logprobs` (different batch size and order) gives exactly 0 at every length: 219,624 tokens in Q1, and 64 / 32 / 16 / 8 sequences at 256 / 1k / 4k / 16k tokens, all tokens bit-equal, nothing outside the clip. D reaches C's value with stock vLLM kernels and no integer model, but only after the attention backend is chosen explicitly (default FLASH_ATTN is not batch invariant, see Setup).
+
+## C vs D
+
+| | C (BitExact) | D (vLLM batch-invariant) |
+|---|---|---|
+| sampler -> scorer mismatch, Q1 and Q2 | 0 | 0 |
+| scorer | separate standalone integer engine | the same vLLM engine, `prompt_logprobs` |
+| scorer on a different GPU type (H800 rollouts scored on H100) | 0 (rl_mismatch: logits hashes equal across H800, H100, x86 CPU) | 0 (this run: 1024 + 120 sequences, all log p bit-equal to the H800 scorer) |
+| arithmetic of the trained model | int8 weights, integer activations; differs from a float model | float bf16 on the dequantized weights; the same arithmetic as ordinary float training forward |
+| settings that matter | none found | attention backend (TRITON_ATTN), `max_num_seqs` >= 8 in the scorer; default backend gives 6/32 reproducible sequences |
+| sampler tok/s vs stock vLLM bf16 | 2.9-4.8x slower | 1.4-3.9x slower (1.4-1.6x at batch 64, 3.1-3.9x at batch 1) |
+| scorer tok/s (GSM8K rollouts) | 6.5k | 39k-45k (6.8x) |
+| scorer tok/s (4k sequences, batch 4) | 3.6k | 37k (10x) |
+| HF bf16 / fp32 scorer for comparison | - | HF bf16 122k / 17k (GSM8K), 94k / 12.8k (4k sequences) |
+
+What D shows and does not show: the scorer here is vLLM's inference engine, not a training forward with a backward pass, so the 0 says the policy's inference-side log p are reproducible across batch shape and GPU type, not that a trainer using HF/FSDP matches them. The blog's own trainer calls vLLM's kernels through a custom autograd function; that was not built here. D's cross-hardware test moved only the scorer (H800 -> H100, same vLLM 0.32.0, torch, Triton); re-sampling on another GPU type and a different vLLM/Triton build were not tested (rl_mismatch measured those for stock vLLM bf16 and C: stock vLLM replays diverge on 13-17% of flagged trajectories, C on none).
 
 ## Deviations and caveats
 
@@ -130,3 +147,7 @@ d = log p_scorer - log p_sampler over the sampler's tokens, r = exp(d), clip = [
 - Speed: single GPU, but host 141 is shared with other jobs on other GPUs (CPU and memory bandwidth contention not controlled). Sampler tok/s counts generated tokens over wall time of `generate` (prefill included, prefix caching on, `ignore_eos`, no hash/log-prob logging in the plugin). Scorer tok/s counts prompt + response tokens through the network; the log-softmax over the response positions is included, row hashing and host transfer are not. The batch-1 plugin 256-token run had one slow first rep (137 tok/s, others 215); median is reported.
 - Q2 has 8-64 sequences per length; fractions at 16k are out of 8. Per-token numbers are on 131k to 16k tokens and are stable; sequence-level fractions at long lengths are coarse.
 - Scope: one 1B model, base-model continuation of a few-shot prompt, T = 1. Mean |d| for the bf16 arms is dominated by kernel numerics, not by length; nothing here says how a different model, a real long-reasoning distribution, or a trained policy would behave.
+- Arm D: the TRITON_ATTN choice was made from a 32-sequence smoke test (8 prompts x 4) after FLASH_ATTN (default under the flag) failed it; no other attention backend or kernel setting was tried. `max_num_seqs` 5 crashed the scorer at warm-up with a Triton illegal-memory-access error, so the scorer used 128 (8 and 64 for the speed runs); the cause is not investigated.
+- Arm D sampler speed uses `speed_sampler.py` with TRITON_ATTN and the batch-invariant flag (breakable CUDA graphs auto-enabled by vLLM); the scorer speed counts four passes with the first dropped, `--no-save`, prefix caching off.
+- Arm D cross-hardware: host 138 had every GPU busy for the first hour; the run waited for a GPU with < 1 GB used (GPU 3, then idle) and used GPU 3 only. The venv there was installed fresh (vllm 0.32.0, numpy 2.3.5, transformers 5.19.0, from public PyPI because the internal mirror timed out); the dequantized checkpoint was rebuilt on 138 from the original weights (same SHA-256 of the safetensors file as on 141). The vLLM score script exits with a core dump at interpreter shutdown after writing its output (reported as FAIL by the loop); outputs were complete. FlashInfer sampler was disabled (`VLLM_USE_FLASHINFER_SAMPLER=0`, as on 141) because its JIT build failed there.
+- Arm D scorer accuracy numbers are not reported; Q1 accuracy of the D sampler is 1.9% (same base-model, 2-shot setting).

@@ -1,0 +1,30 @@
+{
+ "mismatch": {
+  "D_h800_to_h100": {
+   "prompts": 128,
+   "seqs": 1024,
+   "tokens": 219624,
+   "absd_mean": 0.0,
+   "absd_p50": 0.0,
+   "absd_p99": 0.0,
+   "absd_max": 0.0,
+   "frac_tokens_d_nonzero": 0.0,
+   "ratio_mean": 1.0,
+   "ratio_p1": 1.0,
+   "ratio_p99": 1.0,
+   "ratio_min": 1.0,
+   "ratio_max": 1.0,
+   "frac_tokens_outside_clip": 0.0,
+   "frac_argmax_differs": 0.0,
+   "seq_abs_logratio_mean": 0.0,
+   "seq_abs_logratio_p99": 0.0,
+   "seq_abs_logratio_max": 0.0,
+   "frac_seqs_ratio_outside_clip": 0.0,
+   "frac_seqs_any_token_differs": 0.0,
+   "kl_k1_mean": 0.0,
+   "kl_k3_mean": 0.0,
+   "kl_k3_max": 0.0
+  }
+ },
+ "replay": {}
+}
