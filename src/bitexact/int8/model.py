@@ -39,11 +39,12 @@ class PagedCache:
 class IntLlama:
     """nl: activation limbs per linear input (2: |q| <= 32512). compiled: torch.compile the element-wise
     segments (same integers); None (default) = on for CUDA, off for CPU. compiled=False is the eager
-    reference: every op a separate PyTorch kernel, same integers."""
+    reference: every op a separate PyTorch kernel, same integers. fused: attention through the plugin's
+    tri_paged kernels (default on CUDA). dynamic: see Segs."""
 
     FR = FR
 
-    def __init__(self, c, device, nl=2, n_layers=None, compiled=None, fused=None):
+    def __init__(self, c, device, nl=2, n_layers=None, compiled=None, fused=None, dynamic=None):
         self.dev = torch.device(device)
         if compiled is None:
             compiled = self.dev.type == "cuda"
@@ -63,7 +64,7 @@ class IntLlama:
         self.exp, self.silu_t, self.cos, self.sin, self.ln = t("exp"), t("silu"), t("cos"), t("sin"), t("ln")
         self.err = torch.zeros((), dtype=torch.bool, device=device)
         self.sha = c.get("sha256")
-        self.sg = Segs(nl, self.dev.type == "cuda", compiled)
+        self.sg = Segs(nl, self.dev.type == "cuda", compiled, dynamic)
         self._w64 = {}                                      # CPU: float64 copies of the int8 weights
         if self.fused:
             from bitexact.vllm_plugin import tri_paged
