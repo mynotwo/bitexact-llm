@@ -57,6 +57,27 @@ Final tree (commit of the push) on GPU 3 of host 141 (H800, 0 MiB before the run
 
 Both new code paths ran there (item a in every GEMM epilogue; item b in the scorer's attention).
 
+## Review fixes
+
+1. **Overflow check (was `DeferredCheck`, raised one step late).** The check is now a device-side assert on the overflow flag (`torch._assert_async(~err)`), enqueued in `compute_logits` behind the step's kernels and ahead of the sampler. A violated bound traps the stream, so the sampler and the copy of the sampled tokens to the host never run: no token of an overflowed step is returned, including on the last step of a run. The host does not wait. The error is a CUDA "device-side assert triggered" `AcceleratorError` (the message `bitexact: integer bound violated` goes to the device log). `BITEXACT_CHECK=sync` selects the old synchronous `IntLlama.check()` (Python `OverflowError`). Tests: `test_overflow_on_last_step_never_returns_tokens` (subprocess, err forced on the last step: 2 of 3 steps print, then it fails), `test_overflow_check_sync_mode_raises`; end to end `experiments/speed/e2e_overflow.py` (vLLM generate of 8 tokens with the flag forced on the 8th and last `compute_logits`: generate raises, nothing returned; unforced run returns 8 tokens).
+2. Scorer: an empty prompt raises `ValueError`; an all-empty-response batch (or an empty batch) returns empty results; an empty response among others gives an empty result.
+3. Docstrings and `test_cpu_scorer_is_reference_flow`: the claim is bit-equal integer logits across devices (row hashes compared, CPU scorer vs the sequence alone and vs the GPU scorer); log p is bit-equal on one device only (CPU vs GPU float64 log-softmax differs by up to 1.6e-13).
+4. `IntSampler`: the host-side rows path is off when `speculative_config` is set (the device path is used); test `test_host_rows_path_off_under_speculative_decoding`.
+5. `tri_paged.attend` and plugin load: a block table spanning >= 43,690 keys raises a `ValueError` with the reason (int32 limb partial sums of p.v); `max_model_len` is checked at model load. No unfused fallback was added.
+6. New tests: `test_vllm_logits` M = 255/256/257/511/512/513/700; `attend(nsplit=1)` scratch on two streams and CUDA graph replay; scorer 1-token prompt, 1-token response, empty response.
+
+Cost of fix 1, decode ms/step (same host, T = 1, vLLM CUDA graphs, one H100 each, r and b run at the same time):
+
+| tree | B=1 | B=64 |
+|---|---|---|
+| item b (deferred check, one step late) | 2.689 | 5.996 |
+| review fixes (device assert) | 2.668 | 5.982 |
+| review fixes, `BITEXACT_CHECK=sync` | 4.168 | 9.084 |
+
+The assert costs nothing measurable (within the 0.8% spread between GPUs); the synchronous check would cost +1.5 ms/step at B=1 and +3.1 ms/step at B=64.
+
+Gates on the final tree (138, H100): scorer 8 / 8 configurations (rows equal plugin hash, sequence hashes and float64 log p bits equal to the eager reference); decode T = 1 (53,387 tokens) and greedy (65,536 tokens), B=1 and B=64, 256 sequences each: 0 sequences differ from `base`, B=1 equals B=64 (GATE PASS, `BITEXACT_VERIFY_HOST_ROWS=1`). Full test suite and `ruff check` on `src tests experiments/speed`: see the commit log of the push.
+
 ## Not done
 
 - Single-pass online softmax in `tri_paged` (would change the integer definition; excluded by the brief).
