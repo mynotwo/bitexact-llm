@@ -59,6 +59,11 @@ def integer_sample(li, seeds, ts, temps, lnt):
     for r, tt in enumerate(temps):
         groups.setdefault(tt, []).append(r)
     for (tn, td), rows in groups.items():
+        if len(rows) == li.shape[0]:                 # one group (the usual case): no row gather of the logits
+            if tn == 0:
+                return first_argmax(li)
+            raw = gpu_pcg.raw_rows([(seeds[r], max(ts[r], 0)) for r in rows], li.device)
+            return _noisy_guess(li, raw, lnt, tn, td)
         idx = torch.tensor(rows, device=li.device)
         if tn == 0:
             out[idx] = first_argmax(li[idx])
@@ -76,6 +81,9 @@ class IntSampler(LogitsProcessor):
         self.temp = [(0, 1)] * n
         self.lnt = None
         self.log = os.environ.get("BITEXACT_HASH_LOG")
+        self.host_rows = os.environ.get("BITEXACT_HOST_ROWS", "1") == "1"
+        # tests: compare the host-side rows and positions with the device ones
+        self.verify_host = os.environ.get("BITEXACT_VERIFY_HOST_ROWS") == "1"
 
     def add_request(self, req_idx, sampling_params):
         if not STASH.active:
@@ -92,10 +100,19 @@ class IntSampler(LogitsProcessor):
         if self.lnt is None:
             from bitexact.vllm_plugin.model import MODEL
             self.lnt = MODEL.m.ln
-        slots = ctx.expanded_idx_mapping.tolist()
-        pos = ctx.pos.tolist()
         plen = self.rs.prompt_len.np
-        ts = [pos[r] + 1 - int(plen[s]) for r, s in enumerate(slots)]
+        if len(ctx.idx_mapping_np) == li.shape[0] and self.host_rows:
+            # One logits row per request (no speculative decoding): row r is request r and its position is
+            # seq_lens_upper_bound - 1 (exact), both known on the host, so there is no device sync here.
+            slots = ctx.idx_mapping_np.tolist()
+            ts = [int(n) - int(plen[s]) for n, s in zip(ctx.seq_lens_upper_bound_np, slots)]
+            if self.verify_host:
+                assert slots == ctx.expanded_idx_mapping.tolist()
+                assert ts == [p + 1 - int(plen[s]) for p, s in zip(ctx.pos.tolist(), slots)]
+        else:
+            slots = ctx.expanded_idx_mapping.tolist()
+            pos = ctx.pos.tolist()
+            ts = [pos[r] + 1 - int(plen[s]) for r, s in enumerate(slots)]
         seeds = [self.seed[s] for s in slots]
         y = integer_sample(li, seeds, ts, [self.temp[s] for s in slots], self.lnt)
         if self.log:

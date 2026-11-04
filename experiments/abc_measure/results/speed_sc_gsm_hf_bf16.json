@@ -1,0 +1,20 @@
+{
+ "gpu": "NVIDIA H800",
+ "rows": [
+  {
+   "mode": "hf_bf16",
+   "workload": "gsm",
+   "batch": 8,
+   "seqs": 1024,
+   "seq_tokens": 430739,
+   "resp_tokens": 215899,
+   "sec_reps": [
+    6.49,
+    3.53,
+    3.54
+   ],
+   "tok_per_s_median": 121575.6,
+   "resp_tok_per_s_median": 60937.3
+  }
+ ]
+}

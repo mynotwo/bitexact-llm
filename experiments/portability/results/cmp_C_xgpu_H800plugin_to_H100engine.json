@@ -1,0 +1,26 @@
+{
+ "name": "C_xgpu_H800plugin_to_H100engine",
+ "test": "xgpu",
+ "arm": "C",
+ "ref": "/home/audreymao/portability/out/h800_q1_B.json",
+ "x": "/home/audreymao/portability/out/Cs_h800B.json",
+ "kind": "score",
+ "seqs": 1024,
+ "seqs_identical": 1024,
+ "tokens_compared": 215899,
+ "tokens_ref": 215899,
+ "lp_differ": 0,
+ "lp_differ_frac": 0.0,
+ "mean_abs_d": 0.0,
+ "max_abs_d": 0.0,
+ "sha_compared": 215899,
+ "sha_differ": 0,
+ "n_diverged": 0,
+ "status": "ok",
+ "bitwise": true,
+ "x_meta": {
+  "torch": "2.13.0+cu130",
+  "device_name": "NVIDIA H100 80GB HBM3",
+  "bs": 16
+ }
+}

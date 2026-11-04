@@ -1,0 +1,56 @@
+D_sampler_to_scorer                      bitwise=True  seqs 256/256 tok 54946 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+C_sampler_to_scorer                      bitwise=True  seqs 256/256 tok 53387 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/53387
+D_ver0.25.0_t1                           bitwise=False seqs 0/256 tok 85 lp_diff 100.00% mean|d| 0.0188 max|d| 0.112 sha_diff 0/0
+D_ver0.25.0_t0                           bitwise=False seqs 88/256 tok 27840 lp_diff 99.86% mean|d| 0.00758 max|d| 0.24 sha_diff 0/0
+D_ver0.25.0_score                        bitwise=False seqs 256/256 tok 54946 lp_diff 99.96% mean|d| 0.0243 max|d| 0.76 sha_diff 0/0
+C_ver0.25.0_t1                           failed ModuleNotFoundError: No module named 'vllm.v1.worker.gpu.sample.logits_processor'
+C_ver0.25.0_t0                           failed ModuleNotFoundError: No module named 'vllm.v1.worker.gpu.sample.logits_processor'
+C_ver0.25.0_score                        bitwise=True  seqs 256/256 tok 53387 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/53387
+D_ver0.28.0_t1                           bitwise=False seqs 0/256 tok 85 lp_diff 100.00% mean|d| 0.0213 max|d| 0.12 sha_diff 0/0
+D_ver0.28.0_t0                           bitwise=False seqs 128/256 tok 36688 lp_diff 99.80% mean|d| 0.00711 max|d| 0.271 sha_diff 0/0
+D_ver0.28.0_score                        bitwise=False seqs 256/256 tok 54946 lp_diff 99.95% mean|d| 0.0244 max|d| 0.812 sha_diff 0/0
+C_ver0.28.0_t1                           failed ModuleNotFoundError: No module named 'vllm.v1.worker.gpu.sample.logits_processor'
+C_ver0.28.0_t0                           failed ModuleNotFoundError: No module named 'vllm.v1.worker.gpu.sample.logits_processor'
+C_ver0.28.0_score                        bitwise=True  seqs 256/256 tok 53387 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/53387
+D_ver0.31.0_t1                           bitwise=True  seqs 256/256 tok 54946 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+D_ver0.31.0_t0                           bitwise=True  seqs 256/256 tok 65536 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+D_ver0.31.0_score                        bitwise=True  seqs 256/256 tok 54946 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+C_ver0.31.0_t1                           bitwise=True  seqs 256/256 tok 53387 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/53387
+C_ver0.31.0_t0                           bitwise=True  seqs 256/256 tok 65536 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/65536
+C_ver0.31.0_score                        bitwise=True  seqs 256/256 tok 53387 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/53387
+D_ver0.33.0_t1                           bitwise=False seqs 254/256 tok 54691 lp_diff 16.78% mean|d| 2.84e-05 max|d| 0.126 sha_diff 0/0
+D_ver0.33.0_t0                           bitwise=False seqs 256/256 tok 65536 lp_diff 13.99% mean|d| 1.64e-08 max|d| 4.77e-07 sha_diff 0/0
+D_ver0.33.0_score                        bitwise=False seqs 256/256 tok 54946 lp_diff 17.16% mean|d| 0.000132 max|d| 0.146 sha_diff 0/0
+C_ver0.33.0_t1                           bitwise=True  seqs 256/256 tok 53387 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/53387
+C_ver0.33.0_t0                           bitwise=True  seqs 256/256 tok 65536 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/65536
+C_ver0.33.0_score                        bitwise=True  seqs 256/256 tok 53387 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/53387
+D_ver0.25.0_own_ms64_vs_ms256            bitwise=True  seqs 256/256 tok 54938 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+D_ver0.25.0_own_sampler_to_scorer        bitwise=True  seqs 256/256 tok 54938 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+D_ver0.28.0_own_ms64_vs_ms256            bitwise=True  seqs 256/256 tok 55024 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+D_ver0.28.0_own_sampler_to_scorer        bitwise=True  seqs 256/256 tok 55024 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+D_tp2_t1                                 bitwise=False seqs 25/256 tok 16130 lp_diff 100.00% mean|d| 0.0228 max|d| 0.365 sha_diff 0/0
+D_tp2_t0                                 bitwise=False seqs 80/256 tok 27736 lp_diff 99.80% mean|d| 0.0078 max|d| 0.196 sha_diff 0/0
+D_tp2_score                              bitwise=False seqs 256/256 tok 54946 lp_diff 99.97% mean|d| 0.0241 max|d| 0.447 sha_diff 0/0
+D_tp2_ms64_vs_ms256                      bitwise=True  seqs 256/256 tok 53591 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+D_tp2_ms1_vs_ms256                       bitwise=True  seqs 256/256 tok 53591 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+D_tp4_t1                                 bitwise=False seqs 32/256 tok 17276 lp_diff 100.00% mean|d| 0.0233 max|d| 0.336 sha_diff 0/0
+D_tp4_t0                                 bitwise=False seqs 112/256 tok 34192 lp_diff 99.88% mean|d| 0.00714 max|d| 0.181 sha_diff 0/0
+D_tp4_score                              bitwise=False seqs 256/256 tok 54946 lp_diff 99.96% mean|d| 0.0242 max|d| 0.546 sha_diff 0/0
+D_tp4_ms64_vs_ms256                      bitwise=True  seqs 256/256 tok 54451 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+D_tp4_ms1_vs_ms256                       bitwise=True  seqs 256/256 tok 54451 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+D_tp1_ms64_vs_ms256                      bitwise=True  seqs 256/256 tok 54946 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+D_tp1_ms1_vs_ms256                       bitwise=True  seqs 256/256 tok 54946 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+D_score_ms8_vs_ms128                     bitwise=True  seqs 256/256 tok 54946 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+C_tp2_t1                                 bitwise=True  seqs 256/256 tok 53387 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/53387
+C_ms64_vs_ms256                          bitwise=True  seqs 256/256 tok 53387 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/53387
+C_ms1_vs_ms256                           bitwise=True  seqs 256/256 tok 53387 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/53387
+C_score_bs1_vs_bs8                       bitwise=True  seqs 256/256 tok 53387 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/53387
+C_score_bs64_vs_bs8                      bitwise=True  seqs 256/256 tok 53387 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/53387
+D_xgpu_sampler_H800_vs_H100              bitwise=True  seqs 256/256 tok 54946 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/0
+C_xgpu_sampler_H800_vs_H100              bitwise=True  seqs 256/256 tok 53387 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/53387
+C_xgpu_H800plugin_to_H100engine          bitwise=True  seqs 1024/1024 tok 215899 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/215899
+C_cpu_engine_vs_gpu_engine               bitwise=True  seqs 16/16 tok 3496 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/3496
+C_cpu_engine_vs_gpu_plugin               bitwise=True  seqs 16/16 tok 3496 lp_diff 0.00% mean|d| 0 max|d| 0 sha_diff 0/3496
+D_cpu_hf_bf16_vs_gpu                     bitwise=False seqs 16/16 tok 3017 lp_diff 100.00% mean|d| 0.0253 max|d| 0.279 sha_diff 0/0
+D_cpu_hf_fp32_vs_gpu                     bitwise=False seqs 16/16 tok 3017 lp_diff 100.00% mean|d| 0.0229 max|d| 0.177 sha_diff 0/0
+D_cpu_vllm_vs_gpu                        failed RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {'EngineCore': 1}

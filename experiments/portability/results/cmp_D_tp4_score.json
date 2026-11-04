@@ -1,0 +1,29 @@
+{
+ "name": "D_tp4_score",
+ "test": "tp",
+ "arm": "D",
+ "ref": "/home/audreymao/portability/out/Ds_t1.json",
+ "x": "/home/audreymao/portability/out/Ds_t1_tp4.json",
+ "kind": "score",
+ "seqs": 256,
+ "seqs_identical": 256,
+ "tokens_compared": 54946,
+ "tokens_ref": 54946,
+ "lp_differ": 54926,
+ "lp_differ_frac": 0.9996360062606923,
+ "mean_abs_d": 0.024166533610420367,
+ "max_abs_d": 0.5461115837097168,
+ "sha_compared": 0,
+ "sha_differ": 0,
+ "n_diverged": 0,
+ "status": "ok",
+ "bitwise": false,
+ "x_meta": {
+  "vllm": "0.32.0",
+  "torch": "2.13.0+cu130",
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "tp": 4,
+  "max_seqs": 128,
+  "dtype": "bfloat16"
+ }
+}

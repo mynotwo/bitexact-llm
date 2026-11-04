@@ -1,0 +1,77 @@
+{
+ "gpu": "NVIDIA H800",
+ "rows": [
+  {
+   "engine": "bf16",
+   "gen_len": 256,
+   "batch": 1,
+   "tok_per_s_median": 212.4,
+   "tok_per_s_reps": [
+    212.9,
+    212.2,
+    212.4
+   ],
+   "tokens_per_rep": 256
+  },
+  {
+   "engine": "bf16",
+   "gen_len": 256,
+   "batch": 8,
+   "tok_per_s_median": 1754.7,
+   "tok_per_s_reps": [
+    1699.1,
+    1757.5,
+    1754.7
+   ],
+   "tokens_per_rep": 2048
+  },
+  {
+   "engine": "bf16",
+   "gen_len": 256,
+   "batch": 64,
+   "tok_per_s_median": 16357.9,
+   "tok_per_s_reps": [
+    16393.2,
+    16357.9,
+    16346.3
+   ],
+   "tokens_per_rep": 16384
+  },
+  {
+   "engine": "bf16",
+   "gen_len": 4096,
+   "batch": 1,
+   "tok_per_s_median": 171.3,
+   "tok_per_s_reps": [
+    171.4,
+    171.3,
+    171.3
+   ],
+   "tokens_per_rep": 4096
+  },
+  {
+   "engine": "bf16",
+   "gen_len": 4096,
+   "batch": 8,
+   "tok_per_s_median": 1405.5,
+   "tok_per_s_reps": [
+    1406.8,
+    1405.5,
+    1404.9
+   ],
+   "tokens_per_rep": 32768
+  },
+  {
+   "engine": "bf16",
+   "gen_len": 4096,
+   "batch": 64,
+   "tok_per_s_median": 11842.9,
+   "tok_per_s_reps": [
+    11842.9,
+    11848.5,
+    11816.2
+   ],
+   "tokens_per_rep": 262144
+  }
+ ]
+}

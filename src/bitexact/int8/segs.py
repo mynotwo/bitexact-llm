@@ -35,11 +35,14 @@ def pre_plain(x, nl):
     return q, mant, e
 
 
-def post(acc, m, fmsh, mant, e):
-    """acc * s_c / qmax * row scale at FR (fmsh = fm + 8 (nl - 1) - 24, a 0-d tensor)."""
+def post(acc, m, fmsh, mant, e, whole=False):
+    """acc * s_c / qmax * row scale at FR (fmsh = fm + 8 (nl - 1) - 24, a 0-d tensor). Second result: per-row max of |t|
+    (the bound flag is max(tmax) >= 2^38, tested outside this function); whole=True returns the flag itself."""
     t = rsh(acc * m, fmsh)
-    flag = t.abs().amax() >= 1 << 38                       # t * mant < 2^62
-    return rsh(t * mant[:, None], (24 - FR - e)[:, None]), flag
+    if whole:
+        return rsh(t * mant[:, None], (24 - FR - e)[:, None]), t.abs().amax() >= 1 << 38      # t * mant < 2^62
+    tmax = t.abs().amax(1)
+    return rsh(t * mant[:, None], (24 - FR - e)[:, None]), tmax
 
 
 def _rope(x, c, s):
@@ -70,6 +73,13 @@ def softmax(raw, qpos, expt):
     return p, p.sum(-1, keepdim=True)
 
 
+def qkv_rows(y, c, s):
+    """Like qkv for flat rows y [N, 3072] (T = 1): q as rows [N * H, HD] (row n * H + h, i.e. [n, HKV, G, HD]
+    flattened) and K | V as int32 [N, HKV, 2 HD] ready for the paged cache."""
+    qg, k, v, flag = qkv(y.view(y.shape[0], 1, -1), c, s)
+    return qg.reshape(-1, HD), torch.cat([k[:, 0], v[:, 0]], -1).to(torch.int32), flag
+
+
 def attn_out(num, den, T, nl):
     """num [B, HKV, gT, HD], den [B, HKV, gT, 1] -> quantized o [B*T, H*HD] for o_proj."""
     B = num.shape[0]
@@ -77,6 +87,11 @@ def attn_out(num, den, T, nl):
     o = rdiv(num << (FR - FV), den)
     o = o.view(B, HKV, g, T, HD).permute(0, 3, 1, 2, 4).reshape(B * T, H * HD)
     return pre_plain(o, nl)
+
+
+def attn_rows(num, den):
+    """num [n, HKV, M, HD], den [n, HKV, M, 1] -> o = round(num 2^(FR - FV) / den) at FR, same shape."""
+    return rdiv(num << (FR - FV), den)
 
 
 def silu_mul(gu, lut, nl):
@@ -88,9 +103,14 @@ def silu_mul(gu, lut, nl):
 
 
 class Segs:
-    def __init__(self, nl, cuda, compiled):
-        # nl is a Python int closed over; dynamic=None keeps such ints static and only lets shapes vary.
-        wrap = (lambda f: torch.compile(f, dynamic=None)) if compiled else (lambda f: f)
+    def __init__(self, nl, cuda, compiled, dynamic=None):
+        """dynamic=None: one compile per shape until a shape changes, then shape-generic kernels (nl is a Python int
+        closed over and stays static). dynamic=False: one compile per distinct shape, kernels specialised to it
+        (faster than the shape-generic ones; callers bucket the row counts, e.g. the packed scorer)."""
+        self.compiled, self.dynamic = compiled, dynamic
+        if compiled and dynamic is False:
+            torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, 64)
+        wrap = (lambda f: torch.compile(f, dynamic=dynamic)) if compiled else (lambda f: f)
         lim = (lambda q: stack_limbs(q, nl)) if cuda else (lambda q: q)
         join = (lambda c, M: join_limbs(c, M, nl)) if cuda else (lambda c, M: c)
 
@@ -102,11 +122,14 @@ class Segs:
         self.post = wrap(lambda c, m, fmsh, mant, e: post(join(c, mant.shape[0]), m, fmsh, mant, e))
         self.post_add = wrap(lambda c, m, fmsh, mant, e, x: _add(post(join(c, mant.shape[0]), m, fmsh, mant, e), x))
         self.qkv = wrap(qkv)
+        self.qkv_rows = wrap(qkv_rows)
         self.softmax = wrap(softmax)
         self.attn_out = wrap(lambda num, den, T: with_limbs(attn_out(num, den, T, nl)))
+        self.attn_rows = torch.compile(attn_rows, dynamic=None) if compiled else attn_rows    # tile count varies
         self.silu_mul = wrap(lambda gu, lut: with_limbs(silu_mul(gu, lut, nl)))
 
 
 def _add(out, x):
     y, flag = out
     return x + y.view(x.shape), flag
+

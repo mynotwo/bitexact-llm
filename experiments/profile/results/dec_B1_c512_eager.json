@@ -1,0 +1,410 @@
+{
+ "args": {
+  "const": "/home/audreymao/abc_measure/const.pt",
+  "model": "/home/audreymao/abc_measure/deqmodel",
+  "B": 1,
+  "ctx": 512,
+  "mode": "eager",
+  "steps": 20,
+  "out": "/home/audreymao/profile/out/dec_B1_c512_eager"
+ },
+ "gpu": "NVIDIA H100 80GB HBM3",
+ "torch": "2.13.0+cu130",
+ "ms_forward_nograph": 103.932,
+ "ms_step_nograph": 107.172,
+ "ms_tail": 3.197,
+ "profile": {
+  "wall_ms_per_step": 212.773,
+  "busy_ms_per_step": 17.835,
+  "kernels_per_step": 12686.0,
+  "by_path_us_per_step": {
+   "pre_norm/quant": [
+    3065.9,
+    2432.0
+   ],
+   "pre_norm/rmsnorm": [
+    3061.5,
+    2400.0
+   ],
+   "post": [
+    2798.4,
+    2080.0
+   ],
+   "silu_mul/quant": [
+    1555.8,
+    1216.0
+   ],
+   "pre_plain/quant": [
+    1536.1,
+    1216.0
+   ],
+   "gemm": [
+    779.2,
+    64.0
+   ],
+   "pre_norm/limb_split": [
+    597.9,
+    480.0
+   ],
+   "attn_paged": [
+    574.4,
+    256.0
+   ],
+   "post/limb_join": [
+    484.6,
+    256.0
+   ],
+   "silu_mul/silu_lut": [
+    464.5,
+    288.0
+   ],
+   "qkv_rope/rope": [
+    462.6,
+    352.0
+   ],
+   "pre_norm": [
+    375.3,
+    288.0
+   ],
+   "silu_mul/limb_split": [
+    311.2,
+    240.0
+   ],
+   "qkv_rope": [
+    307.0,
+    208.0
+   ],
+   "pre_plain/limb_split": [
+    304.0,
+    240.0
+   ],
+   "sampler": [
+    282.5,
+    142.0
+   ],
+   "silu_mul": [
+    255.3,
+    160.0
+   ],
+   "(none)": [
+    206.7,
+    139.0
+   ],
+   "lm_head/lm_head/gemm": [
+    96.7,
+    1.0
+   ],
+   "lm_head/lm_head/pre_norm/quant": [
+    95.8,
+    76.0
+   ],
+   "lm_head/lm_head/pre_norm/rmsnorm": [
+    95.6,
+    75.0
+   ],
+   "lm_head/lm_head/post": [
+    61.9,
+    32.0
+   ],
+   "lm_head/lm_head/pre_norm/limb_split": [
+    18.7,
+    15.0
+   ],
+   "pre_plain": [
+    18.7,
+    16.0
+   ],
+   "lm_head/lm_head/pre_norm": [
+    11.7,
+    9.0
+   ],
+   "lm_head/lm_head/post/limb_join": [
+    11.2,
+    4.0
+   ],
+   "lm_head/lm_head": [
+    1.4,
+    1.0
+   ]
+  },
+  "by_kernel_class_us_per_step": {
+   "eager elementwise": [
+    15437.9,
+    11962.0
+   ],
+   "int GEMM (cuBLASLt _int_mm)": [
+    779.2,
+    64.0
+   ],
+   "eager reduction": [
+    729.4,
+    273.0
+   ],
+   "eager elementwise | lm_head": [
+    272.9,
+    208.0
+   ],
+   "eager elementwise | sampler": [
+    246.7,
+    139.0
+   ],
+   "attention (fused paged)": [
+    212.9,
+    32.0
+   ],
+   "int GEMM (cuBLASLt _int_mm) | lm_head": [
+    96.7,
+    1.0
+   ],
+   "eager reduction | sampler": [
+    31.9,
+    2.0
+   ],
+   "eager reduction | lm_head": [
+    23.6,
+    4.0
+   ],
+   "other | sampler": [
+    3.9,
+    1.0
+   ]
+  }
+ },
+ "gemm": [
+  {
+   "M": 24,
+   "N": 2048,
+   "K": 8192,
+   "lm_head": false,
+   "count": 80,
+   "us": 1510.6,
+   "us_each": 18.88,
+   "TOPS": 42.6
+  },
+  {
+   "M": 24,
+   "N": 16384,
+   "K": 2048,
+   "lm_head": false,
+   "count": 80,
+   "us": 1269.9,
+   "us_each": 15.87,
+   "TOPS": 101.5
+  },
+  {
+   "M": 24,
+   "N": 3072,
+   "K": 2048,
+   "lm_head": false,
+   "count": 80,
+   "us": 560.8,
+   "us_each": 7.01,
+   "TOPS": 43.1
+  },
+  {
+   "M": 24,
+   "N": 2048,
+   "K": 2048,
+   "lm_head": false,
+   "count": 80,
+   "us": 554.5,
+   "us_each": 6.93,
+   "TOPS": 29.0
+  },
+  {
+   "M": 24,
+   "N": 128256,
+   "K": 2048,
+   "lm_head": true,
+   "count": 5,
+   "us": 483.3,
+   "us_each": 96.66,
+   "TOPS": 130.4
+  }
+ ],
+ "top_kernels": [
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::(anonymous namespace)::launch_clamp_scalar(at::TensorItera",
+   1804.3,
+   1461
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::CUDAFunctorOnSelf_add<long>, std::array<char*, 2ul> >(int,",
+   1766.0,
+   1501
+  ],
+  [
+   "void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}:",
+   1402.4,
+   842
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::FillFunctor<long>, std::array<char*, 1ul> >(int, at::nativ",
+   1210.5,
+   1214
+  ],
+  [
+   "void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native::BinaryFunctor<long, long, lon",
+   1209.7,
+   731
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::CUDAFunctor_add<long>, std::array<char*, 3ul> >(int, at::n",
+   1067.8,
+   844
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::(anonymous namespace)::where_kernel_impl(at::TensorIterato",
+   950.8,
+   727
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::BinaryFunctor<long, long, long, at::native::lshift_kernel_",
+   913.7,
+   723
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<8, at::native::compare_scalar_kernel<long>(at::TensorIteratorBase&, at::n",
+   883.6,
+   724
+  ],
+  [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_64x64_",
+   779.2,
+   64
+  ],
+  [
+   "void at::native::reduce_kernel<512, 1, at::native::ReduceOp<long, at::native::func_wrapper_t<long, at::native::MaxNanFun",
+   688.0,
+   245
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::BinaryFunctor<long, long, long, at::native::binary_interna",
+   482.5,
+   347
+  ],
+  [
+   "void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<long> >(at::T",
+   476.6,
+   310
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::neg_kernel_cuda(at::TensorIteratorBase&)::{lambda()#2}::op",
+   470.3,
+   392
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::AUnaryFunctor<long, long, long, at::native::binary_interna",
+   397.3,
+   333
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<8, at::native::(anonymous namespace)::CompareFunctor<long>, std::array<ch",
+   392.1,
+   298
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::BUnaryFunctor<long, long, long, at::native::rshift_kernel_",
+   326.9,
+   272
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::AbsFunctor<long>, std::array<char*, 2ul> >(int, at::native",
+   297.9,
+   244
+  ],
+  [
+   "void at::native::index_elementwise_kernel<128, 4, at::native::gpu_index_kernel<at::native::index_kernel_impl<at::native:",
+   243.2,
+   72
+  ],
+  [
+   "void at::native::(anonymous namespace)::unrolled_elementwise_kernel_for_multi_outputs<2, at::native::frexp_kernel_cuda(a",
+   209.1,
+   166
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::BinaryFunctor<long, long, long, at::native::rshift_kernel_",
+   206.7,
+   166
+  ],
+  [
+   "void at::native::(anonymous namespace)::CatArrayBatchedCopy_vectorized<at::native::(anonymous namespace)::OpaqueType<1u>",
+   168.6,
+   130
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<8, at::native::BinaryFunctor<bool, bool, bool, at::native::BitwiseOrFunct",
+   164.7,
+   130
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::BUnaryFunctor<long, long, long, at::native::lshift_kernel_",
+   162.9,
+   130
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::CUDAFunctorOnOther_add<long>, std::array<char*, 2ul> >(int",
+   162.9,
+   136
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::AUnaryFunctor<long, long, long, at::native::BitwiseAndFunc",
+   158.4,
+   134
+  ],
+  [
+   "_acc_kernel",
+   135.2,
+   16
+  ],
+  [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x6",
+   96.7,
+   1
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::BUnaryFunctor<long, long, long, at::native::binary_interna",
+   93.3,
+   50
+  ],
+  [
+   "void at::native::reduce_kernel<512, 1, at::native::ReduceOp<long, at::native::func_wrapper_t<long, at::native::sum_funct",
+   80.9,
+   33
+  ]
+ ],
+ "bytes": {
+  "by_path": {
+   "gemm": 1014759424,
+   "sampler": 313714248,
+   "lm_head/lm_head/gemm": 275030016,
+   "post": 61865984,
+   "silu_mul/silu_lut": 44564480,
+   "silu_mul/limb_split": 35389440,
+   "post/limb_join": 24117248,
+   "lm_head/lm_head/post": 20520960,
+   "silu_mul/quant": 17825792,
+   "pre_norm/limb_split": 17694720,
+   "silu_mul": 13631488,
+   "pre_norm/quant": 8912896,
+   "pre_plain/limb_split": 8847360,
+   "lm_head/lm_head/post/limb_join": 8208384,
+   "pre_norm/rmsnorm": 6291456,
+   "pre_plain/quant": 4456448,
+   "qkv_rope/rope": 4292608,
+   "attn_paged": 2974848,
+   "(none)": 2671880,
+   "pre_norm": 1572864,
+   "qkv_rope": 1441792,
+   "lm_head/lm_head/pre_norm/limb_split": 552960,
+   "lm_head/lm_head/pre_norm/quant": 278528,
+   "lm_head/lm_head/pre_norm/rmsnorm": 196608,
+   "lm_head/lm_head/pre_norm": 49152,
+   "pre_plain": 0,
+   "lm_head": 0,
+   "lm_head/lm_head": 0
+  },
+  "attn_paged_kv_read_est": 50331648
+ }
+}
