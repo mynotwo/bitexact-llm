@@ -36,7 +36,7 @@ def main():
     if a.long:
         from bitexact.vllm_plugin.model import _extend_rope
         _extend_rope(c, a.model_dir, 16384)
-    m = IntLlama(c, "cuda", nl=2)
+    m = IntLlama(c, "cuda", nl=2, compiled=False)          # eager reference, independent of the plugin path
     res, lines = {}, []
     with torch.no_grad():
         for w in workload.pick(a.long, a.max_new):

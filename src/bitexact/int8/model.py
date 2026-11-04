@@ -24,12 +24,15 @@ from bitexact.llama import Cache, dims
 
 class IntLlama:
     """nl: activation limbs per linear input (2: |q| <= 32512). compiled: torch.compile the element-wise
-    segments (same integers)."""
+    segments (same integers); None (default) = on for CUDA, off for CPU. compiled=False is the eager
+    reference: every op a separate PyTorch kernel, same integers."""
 
     FR = FR
 
-    def __init__(self, c, device, nl=2, n_layers=None, compiled=False):
+    def __init__(self, c, device, nl=2, n_layers=None, compiled=None):
         self.dev = torch.device(device)
+        if compiled is None:
+            compiled = self.dev.type == "cuda"
         self.H, self.HKV, self.HD, self.D, self.FF = dims(c.get("cfg", {}))
         assert c["emb"].shape[1] == self.D, "constants config does not match the embedding width"
         self.nl = nl
