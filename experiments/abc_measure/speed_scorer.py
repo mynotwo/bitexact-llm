@@ -26,6 +26,15 @@ import common  # noqa: E402
 from bitexact_engine import _pad  # noqa: E402
 
 
+def load_engine(a, items):
+    """IntLlama from the constants, RoPE rows extended (same rule, bit-identical first 2048 rows) to the longest sequence."""
+    from bitexact.int8.model import IntLlama
+    from bitexact.vllm_plugin.model import _extend_rope
+    c = torch.load(a.const, map_location="cpu", weights_only=False)
+    _extend_rope(c, a.model, max(len(p) + len(r) for _, p, r in items) + 8)
+    return IntLlama(c, "cuda")
+
+
 @torch.no_grad()
 def main():
     ap = argparse.ArgumentParser()
@@ -42,8 +51,7 @@ def main():
     tok = AutoTokenizer.from_pretrained(a.model)
     prompts = common.build_prompts(f"{a.data}/test.jsonl", f"{a.data}/train.jsonl", tok)
     if a.mode == "engine":
-        from bitexact import load
-        m = load(a.const, "cuda")
+        m = load_engine(a, [(s, prompts[v["p"]][0], v["tok"]) for s, v in common.load(a.work[0].split("=")[1].split(":")[0])["seqs"].items()])
     else:
         from transformers import AutoModelForCausalLM
         torch.backends.cuda.matmul.allow_tf32 = False

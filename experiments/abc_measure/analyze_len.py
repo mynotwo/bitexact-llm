@@ -57,6 +57,9 @@ def main():
     for spec in a.pair:
         name, files = spec.split("=")
         f1, f2 = files.split(",")
+        if not (os.path.exists(f1) and os.path.exists(f2)):
+            print("missing", name)
+            continue
         out[name] = metrics(common.load(f1)["seqs"], common.load(f2)["seqs"])
     json.dump(out, open(a.out, "w"), indent=1)
     for n, r in out.items():
