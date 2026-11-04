@@ -21,6 +21,21 @@ from bitexact.int8.segs import Segs
 from bitexact.llama import HD, HKV, Cache, D, H
 
 
+class PagedCache:
+    """K | V of every layer in the plugin's paged layout: int32 [B * nbl, HKV, bs, 2 HD], row b owns blocks
+    b * nbl .. (b + 1) * nbl - 1 (what tri_paged.attend reads in place)."""
+
+    def __init__(self, n_layers, B, L, device, bs=16):
+        self.bs, self.nbl = bs, -(-L // bs)
+        self.c = [torch.zeros(B * self.nbl, HKV, bs, 2 * HD, dtype=torch.int32, device=device) for _ in range(n_layers)]
+        self.bt = torch.arange(B * self.nbl, device=device).view(B, self.nbl)
+
+    def write(self, layer, k, v, pos):
+        """k, v int64 [B, T, HKV, HD], positions pos [B, T]."""
+        blk = self.bt[torch.arange(k.shape[0], device=k.device)[:, None], pos // self.bs]
+        self.c[layer][blk, :, pos % self.bs] = torch.cat([k, v], -1).to(torch.int32)
+
+
 class IntLlama:
     """nl: activation limbs per linear input (2: |q| <= 32512). compiled: torch.compile the element-wise
     segments (same integers); None (default) = on for CUDA, off for CPU. compiled=False is the eager
@@ -28,10 +43,11 @@ class IntLlama:
 
     FR = FR
 
-    def __init__(self, c, device, nl=2, n_layers=None, compiled=None):
+    def __init__(self, c, device, nl=2, n_layers=None, compiled=None, fused=None):
         self.dev = torch.device(device)
         if compiled is None:
             compiled = self.dev.type == "cuda"
+        self.fused = self.dev.type == "cuda" if fused is None else fused     # attention: tri_paged kernels
         self.nl = nl
         self.L = c["n_layers"] if n_layers is None else n_layers
         t = lambda k: c[k].to(device)
@@ -49,6 +65,9 @@ class IntLlama:
         self.sha = c.get("sha256")
         self.sg = Segs(nl, self.dev.type == "cuda", compiled)
         self._w64 = {}                                      # CPU: float64 copies of the int8 weights
+        if self.fused:
+            from bitexact.vllm_plugin import tri_paged
+            self.ptab = tri_paged.weight_table(self.exp)
 
     def _fmsh(self, fm):
         return torch.tensor(fm + 8 * (self.nl - 1) - 24, device=self.dev)
@@ -85,6 +104,12 @@ class IntLlama:
         qg, k, v, flag = self.sg.qkv(y, self.cos[pos][:, :, None], self.sin[pos][:, :, None])
         self._flag(flag)
         cache.write(i, k, v, pos)
+        if self.fused:                                  # one fused causal kernel; masked keys are never read
+            from bitexact.vllm_plugin import tri_paged
+            g = H // HKV
+            qpos = pos[:, None, :].expand(B, g, T).reshape(B, g * T)
+            num, den = tri_paged.attend(qg.view(B, HKV, g * T, HD), qpos, cache.c[i], cache.bt, self.ptab)
+            return self._linear(self.sg.attn_out(num, den, T), ly["wo"], x)
         K, V = cache.k[i][:, :, :S], cache.v[i][:, :, :S]
         g = H // HKV
         raw = bmm(qg, K.transpose(-1, -2).reshape(B * HKV, HD, S)).view(B, HKV, g * T, S)   # q.k at 2 FQ
@@ -121,7 +146,7 @@ class IntLlama:
         return self.norm_linear(x, self.gf, self.lm)
 
     def new_cache(self, B, L):
-        return Cache(self.L, B, L, self.dev)
+        return PagedCache(self.L, B, L, self.dev) if self.fused else Cache(self.L, B, L, self.dev)
 
     def check(self):
         if bool(self.err):

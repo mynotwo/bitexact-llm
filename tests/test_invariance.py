@@ -39,6 +39,9 @@ def _variants(kind):
     if CUDA:
         out.append(("cuda", {}))
         out.append(("cuda", {"compiled": True}))
+        if kind == "int8":                                                 # default = compiled + fused attention
+            out.append(("cuda", {"compiled": False, "fused": False}))     # eager reference
+            out.append(("cuda", {"compiled": True, "fused": False}))
         if kind == "exact":
             out.append(("cuda", {"gemm": "cublas"}))
     return out
