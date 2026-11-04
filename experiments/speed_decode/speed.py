@@ -1,8 +1,9 @@
-"""Plugin decode speed inside vLLM (vLLM CUDA graphs, T = 1, ignore_eos), as profile/prof_vllm_decode.py without the profiler.
+"""Plugin decode speed inside vLLM (vLLM CUDA graphs, T = 1, ignore_eos), as prof_vllm_decode.py without profiler.
 
   python speed.py --model INT_DIR --data GSM_DIR --B 64 --gen 512 --out OUT.json
 
-One LLM with max_num_seqs = B, B requests of 178-260-token GSM8K prompts, one untimed warm-up generate, 3 timed generates;
+One LLM with max_num_seqs = B, B requests of 178-260-token GSM8K prompts, one untimed warm-up generate,
+3 timed generates;
 ms_per_step = wall / gen (prefill included), tok/s = generated tokens / wall; both medians of 3.
 """
 import argparse

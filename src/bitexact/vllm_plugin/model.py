@@ -29,6 +29,7 @@ from bitexact.int8.consts import FT
 from bitexact.int8.model import IntLlama
 from bitexact.llama import rope_tables
 from bitexact.vllm_plugin import paged, tri_paged
+from bitexact.vllm_plugin.logits import lm_logits
 from bitexact.vllm_plugin.sampler import STASH
 
 MODEL = None             # the loaded model in this process (the sampler reads the ln table from it)
@@ -130,7 +131,7 @@ class BitExactLlamaForCausalLM(nn.Module):
         return x
 
     def compute_logits(self, hidden_states):
-        li = self.m.logits(hidden_states.long())
+        li = lm_logits(self.m, hidden_states.long())
         self.m.check()
         STASH.logits = li
         return li.float() * (2.0 ** -16)
