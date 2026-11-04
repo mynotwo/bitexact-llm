@@ -57,7 +57,7 @@ EP=experiments/perf/p5_prefill
 
 # prefill bench: shapes B x L, per rep: plugin per tree, then vLLM stock and BI+TRITON_ATTN (bf16), 1B
 bench() { D=$O/bench; mkdir -p $D
-  for rep in 1 2 3; do for sh in "64 256" "64 512" "16 512" "32 1024" "16 1024" "64 1024"; do set -- $sh; b=$1; l=$2
+  for rep in $(seq 1 ${REPS:-3}); do for sh in "64 256" "64 512" "16 512" "32 1024" "16 1024" "64 1024"; do set -- $sh; b=$1; l=$2
     for t in $TREES; do
       run $D/${t}_b${b}_l${l}_r$rep.log 1800 $t $PY $EP/bench_prefill.py --model $MODEL --batch $b --in-len $l --tag ${t}_b${b}_l${l}_r$rep
     done
