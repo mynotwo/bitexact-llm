@@ -1,0 +1,247 @@
+{
+ "args": {
+  "const": "/home/audreymao/abc_measure/const.pt",
+  "model": "/home/audreymao/abc_measure/deqmodel",
+  "B": 64,
+  "ctx": 2304,
+  "mode": "compiled",
+  "steps": 20,
+  "out": "/home/audreymao/profile/out/dec_B64_c2304_compiled"
+ },
+ "gpu": "NVIDIA H100 80GB HBM3",
+ "torch": "2.13.0+cu130",
+ "ms_forward_nograph": 12.119,
+ "ms_step_nograph": 14.124,
+ "ms_tail": 1.848,
+ "ms_forward_graph": 10.89,
+ "ms_step_graph": 12.641,
+ "profile": {
+  "wall_ms_per_step": 14.068,
+  "busy_ms_per_step": 11.37,
+  "kernels_per_step": 810.0,
+  "by_path_us_per_step": {
+   "(none)": [
+    10704.8,
+    795.0
+   ],
+   "sampler": [
+    447.9,
+    8.0
+   ],
+   "lm_head": [
+    216.9,
+    7.0
+   ]
+  },
+  "by_kernel_class_us_per_step": {
+   "attention (fused paged)": [
+    7589.3,
+    32.0
+   ],
+   "fused elementwise (Inductor)": [
+    1785.0,
+    464.0
+   ],
+   "int GEMM (cuBLASLt _int_mm)": [
+    849.0,
+    64.0
+   ],
+   "eager elementwise": [
+    475.9,
+    234.0
+   ],
+   "fused elementwise (Inductor) | sampler": [
+    363.1,
+    5.0
+   ],
+   "int GEMM (cuBLASLt _int_mm) | lm_head": [
+    128.6,
+    1.0
+   ],
+   "fused elementwise (Inductor) | lm_head": [
+    86.8,
+    5.0
+   ],
+   "eager elementwise | sampler": [
+    50.3,
+    2.0
+   ],
+   "other | sampler": [
+    34.6,
+    1.0
+   ],
+   "eager reduction": [
+    5.6,
+    1.0
+   ],
+   "eager elementwise | lm_head": [
+    1.4,
+    1.0
+   ]
+  }
+ },
+ "gemm": [
+  {
+   "M": 128,
+   "N": 128256,
+   "K": 2048,
+   "lm_head": true,
+   "count": 5,
+   "us": 643.2,
+   "us_each": 128.65,
+   "TOPS": 522.7
+  }
+ ],
+ "top_kernels": [
+  [
+   "_acc_kernel",
+   5322.9,
+   16
+  ],
+  [
+   "_max_kernel",
+   2266.4,
+   16
+  ],
+  [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_64x64_",
+   557.4,
+   48
+  ],
+  [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x6",
+   420.3,
+   17
+  ],
+  [
+   "triton_poi_fused___lshift_____rshift____to_copy_add_bitwise_and_cat_clamp_div_frexp_gt_mul_neg_ones_like_sub_unsqueeze_w",
+   375.1,
+   65
+  ],
+  [
+   "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_div_floor_floor_divide_frexp_full_like_gt_le_mul_neg_",
+   271.8,
+   33
+  ],
+  [
+   "triton_poi_fused___lshift_____rshift____to_copy_add_bitwise_and_clamp_floor_divide_frexp_gt_index_le_lt_mul_ones_like_po",
+   227.4,
+   1
+  ],
+  [
+   "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_frexp_ge_gt_index_lt_mul_neg_ones_like_rsub_slice_sub",
+   196.1,
+   16
+  ],
+  [
+   "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_frexp_gt_mul_neg_ones_like_rsub_slice_sub_unsqueeze_w",
+   158.2,
+   16
+  ],
+  [
+   "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_gt_mul_neg_ones_like_slice_sub_unsqueeze_where_zeros_",
+   113.4,
+   16
+  ],
+  [
+   "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_gt_mul_neg_ones_like_slice_sub_where_zeros_like_2",
+   104.4,
+   32
+  ],
+  [
+   "triton_per_fused___lshift_____rshift___abs_add_amax_clamp_gt_neg_ones_like_rsub_slice_sub_unsqueeze_view_where_zeros_lik",
+   100.6,
+   32
+  ],
+  [
+   "triton_red_fused___rshift___add_amin_arange_div_eq_expand_full_like_mul_neg_where_3",
+   70.3,
+   1
+  ],
+  [
+   "void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}:",
+   68.4,
+   18
+  ],
+  [
+   "void at::native::index_elementwise_kernel<128, 4, at::native::gpu_index_kernel<at::native::index_put_kernel_impl<at::nat",
+   65.1,
+   17
+  ],
+  [
+   "triton_red_fused___rshift___add_amax_div_full_like_mul_neg_1",
+   62.8,
+   1
+  ],
+  [
+   "triton_red_fused___rshift___abs_add_amax_cat_8",
+   58.9,
+   16
+  ],
+  [
+   "void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native::BinaryFunctor<long, long, lon",
+   56.9,
+   16
+  ],
+  [
+   "triton_poi_fused___lshift_____rshift___add_clamp_gt_index_mul_neg_ones_like_rsub_slice_sub_unsqueeze_view_where_zeros_li",
+   56.1,
+   32
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::FillFunctor<long>, std::array<char*, 1ul> >(int, at::nativ",
+   53.8,
+   49
+  ],
+  [
+   "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_frexp_gt_mul_neg_ones_like_rsub_sub_unsqueeze_view_wh",
+   51.5,
+   16
+  ],
+  [
+   "void at::native::vectorized_gather_kernel<16, long>(char*, char*, long*, int, long, long, long, long, bool)",
+   50.5,
+   2
+  ],
+  [
+   "triton_per_fused___lshift_____rshift___abs_add_amax_clamp_gt_neg_ones_like_rsub_slice_sub_unsqueeze_where_zeros_like_6",
+   45.1,
+   16
+  ],
+  [
+   "void at::native::vectorized_elementwise_kernel<2, at::native::AUnaryFunctor<long, long, long, at::native::binary_interna",
+   43.8,
+   32
+  ],
+  [
+   "triton_poi_fused___lshift_____rshift____to_copy_add_clamp_gt_mul_neg_ones_like_rsub_slice_sub_unsqueeze_where_zeros_like",
+   42.0,
+   1
+  ],
+  [
+   "triton_per_fused___lshift_____rshift___abs_add_amax_clamp_gt_neg_ones_like_rsub_slice_sub_unsqueeze_where_zeros_like_8",
+   39.3,
+   32
+  ],
+  [
+   "triton_red_fused___rshift___abs_add_amax_cat_11",
+   39.0,
+   16
+  ],
+  [
+   "triton_per_fused___lshift_____rshift____to_copy_abs_add_amax_bitwise_or_clamp_copy__ge_gt_mul_neg_ones_like_slice_sub_wh",
+   34.9,
+   16
+  ],
+  [
+   "_pcg_kernel",
+   34.6,
+   1
+  ],
+  [
+   "void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<long> >(at::T",
+   33.5,
+   16
+  ]
+ ]
+}

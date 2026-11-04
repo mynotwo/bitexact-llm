@@ -1,0 +1,184 @@
+{
+ "B": 1,
+ "gen": 512,
+ "tokens": 512,
+ "sec": [
+  2.184,
+  2.188,
+  2.19
+ ],
+ "tok_per_s_median": 234.0,
+ "ms_per_step_median": 4.274,
+ "prompt_lens": [
+  215
+ ],
+ "gpu": "NVIDIA H100 80GB HBM3",
+ "profile": {
+  "gen": 128,
+  "wall_us": 783355,
+  "busy_us": 314399,
+  "span_us": 781660,
+  "n_kernels": 76219,
+  "by_kernel_class": {
+   "fused elementwise (Inductor)": [
+    124306.2,
+    30064
+   ],
+   "int GEMM (cuBLASLt _int_mm)": [
+    109679.5,
+    8448
+   ],
+   "eager elementwise": [
+    49309.7,
+    32111
+   ],
+   "attention (fused paged)": [
+    26176.6,
+    4096
+   ],
+   "other": [
+    3338.4,
+    956
+   ],
+   "eager reduction": [
+    967.9,
+    288
+   ],
+   "index/copy": [
+    454.5,
+    128
+   ],
+   "memcpy/fill": [
+    167.6,
+    128
+   ]
+  },
+  "top_kernels": [
+   [
+    "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_64x64_",
+    97093.7,
+    8192
+   ],
+   [
+    "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_div_frexp_ge_gt_index_lt_mul_neg_ones_like_rsub_slice",
+    33754.3,
+    2032
+   ],
+   [
+    "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_div_floor_floor_divide_frexp_full_like_gt_le_mul_neg_",
+    27571.1,
+    4224
+   ],
+   [
+    "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_frexp_gt_mul_neg_ones_like_slice_sub_unsqueeze_where_",
+    19439.3,
+    4064
+   ],
+   [
+    "_acc_kernel",
+    16931.9,
+    2048
+   ],
+   [
+    "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x6",
+    12332.3,
+    128
+   ],
+   [
+    "_max_kernel",
+    9244.7,
+    2048
+   ],
+   [
+    "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_div_frexp_gt_mul_neg_ones_like_sub_unsqueeze_view_whe",
+    7504.5,
+    2032
+   ],
+   [
+    "triton_poi_fused___rshift____to_copy_add_bitwise_and_cat_new_zeros_sub_1",
+    7461.8,
+    6224
+   ],
+   [
+    "void at::native::index_elementwise_kernel<128, 4, at::native::gpu_index_kernel<at::native::index_put_kernel_impl<at::nat",
+    7196.1,
+    2192
+   ],
+   [
+    "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_cat_clamp_frexp_gt_index_mul_neg_ones_like_rsub_slice_sub_u",
+    6068.7,
+    2032
+   ],
+   [
+    "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_bitwise_or_clamp_copy__frexp_ge_gt_mul_neg_ones_like_rsub_s",
+    6062.7,
+    2032
+   ],
+   [
+    "void at::native::vectorized_elementwise_kernel<2, at::native::FillFunctor<long>, std::array<char*, 1ul> >(int, at::nativ",
+    5878.4,
+    6287
+   ],
+   [
+    "void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native::BinaryFunctor<long, long, lon",
+    5410.1,
+    2048
+   ],
+   [
+    "void at::native::vectorized_elementwise_kernel<2, at::native::AUnaryFunctor<long, long, long, at::native::binary_interna",
+    4712.9,
+    4096
+   ],
+   [
+    "void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}:",
+    4142.4,
+    2433
+   ],
+   [
+    "triton_per_fused___lshift_____rshift____to_copy_abs_add_amax_bitwise_or_cat_clamp_copy__frexp_ge_gt_index_mul_neg_ones_l",
+    4102.1,
+    2032
+   ],
+   [
+    "void at::native::vectorized_elementwise_kernel<2, at::native::BUnaryFunctor<long, long, long, at::native::binary_interna",
+    3460.9,
+    2048
+   ],
+   [
+    "void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<long> >(at::T",
+    3216.7,
+    2048
+   ],
+   [
+    "void at::native::vectorized_elementwise_kernel<2, at::native::BUnaryFunctor<long, long, long, at::native::remainder_kern",
+    2972.4,
+    2048
+   ],
+   [
+    "void at::native::vectorized_elementwise_kernel<2, at::native::BUnaryFunctor<long, long, long, at::native::lshift_kernel_",
+    2634.0,
+    2048
+   ],
+   [
+    "void at::native::(anonymous namespace)::CatArrayBatchedCopy_vectorized<at::native::(anonymous namespace)::OpaqueType<8u>",
+    2609.0,
+    2048
+   ],
+   [
+    "void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::T",
+    2374.5,
+    2064
+   ],
+   [
+    "triton_poi_fused___rshift____to_copy_add_bitwise_and_cat_new_zeros_sub_5",
+    2349.8,
+    2032
+   ],
+   [
+    "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_ge_gt_mul_neg_ones_like_rsub_slice_sub_unsqueeze_wher",
+    2328.2,
+    64
+   ]
+  ]
+ }
+}

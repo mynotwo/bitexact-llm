@@ -1,0 +1,39 @@
+{
+ "gpu": "NVIDIA H100 80GB HBM3",
+ "args": {
+  "B": 8,
+  "T": 256,
+  "start": [
+   0,
+   256
+  ],
+  "qk_bits": 15,
+  "out": "/home/audreymao/profile/out/bench_attn_gsm.json"
+ },
+ "rows": [
+  {
+   "B": 8,
+   "T": 256,
+   "start": 0,
+   "S": 256,
+   "unfused_ms": 0.795,
+   "fused_ms": 0.452,
+   "num_equal": true,
+   "den_equal": true,
+   "nonzero_den_rows": 65536,
+   "speedup": 1.76
+  },
+  {
+   "B": 8,
+   "T": 256,
+   "start": 256,
+   "S": 512,
+   "unfused_ms": 1.435,
+   "fused_ms": 0.738,
+   "num_equal": true,
+   "den_equal": true,
+   "nonzero_den_rows": 65536,
+   "speedup": 1.94
+  }
+ ]
+}

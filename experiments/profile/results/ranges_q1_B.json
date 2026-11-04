@@ -1,0 +1,202 @@
+{
+ "seqs": 32,
+ "rollout": "q1_B.json",
+ "ranges": {
+  "attn_out.in.den": {
+   "max": 150276979,
+   "bits": 28,
+   "limbs": 4,
+   "fits_int32": true,
+   "what": ""
+  },
+  "attn_out.in.num_pv": {
+   "max": 3183062874374,
+   "bits": 42,
+   "limbs": 6,
+   "fits_int32": false,
+   "what": ""
+  },
+  "attn_out.out0": {
+   "max": 32512,
+   "bits": 15,
+   "limbs": 2,
+   "fits_int32": true,
+   "what": ""
+  },
+  "attn_out.out1": {
+   "max": 16776960,
+   "bits": 24,
+   "limbs": 4,
+   "fits_int32": true,
+   "what": ""
+  },
+  "attn_out.out2": {
+   "max": 26,
+   "bits": 5,
+   "limbs": 1,
+   "fits_int32": true,
+   "what": ""
+  },
+  "int_mm.out_int32": {
+   "max": 1227068,
+   "bits": 21,
+   "limbs": 3,
+   "fits_int32": true,
+   "what": ""
+  },
+  "logits": {
+   "max": 2325585,
+   "bits": 22,
+   "limbs": 3,
+   "fits_int32": true,
+   "what": ""
+  },
+  "post.in.acc_joined": {
+   "max": 283729579,
+   "bits": 29,
+   "limbs": 4,
+   "fits_int32": true,
+   "what": ""
+  },
+  "post.out0": {
+   "max": 14234321,
+   "bits": 24,
+   "limbs": 4,
+   "fits_int32": true,
+   "what": ""
+  },
+  "post.out1": {
+   "max": 0,
+   "bits": 0,
+   "limbs": 1,
+   "fits_int32": true,
+   "what": ""
+  },
+  "pre_norm.in.x_residual": {
+   "max": 14557629,
+   "bits": 24,
+   "limbs": 4,
+   "fits_int32": true,
+   "what": ""
+  },
+  "pre_norm.out0": {
+   "max": 32512,
+   "bits": 15,
+   "limbs": 2,
+   "fits_int32": true,
+   "what": "q of RMSNorm input (limbs, nl=2)"
+  },
+  "pre_norm.out1": {
+   "max": 16777188,
+   "bits": 24,
+   "limbs": 4,
+   "fits_int32": true,
+   "what": ""
+  },
+  "pre_norm.out2": {
+   "max": 24,
+   "bits": 5,
+   "limbs": 1,
+   "fits_int32": true,
+   "what": ""
+  },
+  "qkv.in.y": {
+   "max": 1720754,
+   "bits": 21,
+   "limbs": 3,
+   "fits_int32": true,
+   "what": ""
+  },
+  "qkv.out0": {
+   "max": 373973,
+   "bits": 19,
+   "limbs": 3,
+   "fits_int32": true,
+   "what": "q after RoPE (FQ 14)"
+  },
+  "qkv.out1": {
+   "max": 430149,
+   "bits": 19,
+   "limbs": 3,
+   "fits_int32": true,
+   "what": "k after RoPE (FQ 14)"
+  },
+  "qkv.out2": {
+   "max": 127723,
+   "bits": 17,
+   "limbs": 3,
+   "fits_int32": true,
+   "what": "v (FV 14)"
+  },
+  "qkv.out3": {
+   "max": 0,
+   "bits": 0,
+   "limbs": 1,
+   "fits_int32": true,
+   "what": ""
+  },
+  "rsh.in(any)": {
+   "max": 4611686068653384090,
+   "bits": 63,
+   "limbs": 8,
+   "fits_int32": false,
+   "what": ""
+  },
+  "silu_mul.in.gate_up": {
+   "max": 2857052,
+   "bits": 22,
+   "limbs": 3,
+   "fits_int32": true,
+   "what": ""
+  },
+  "silu_mul.out0": {
+   "max": 32512,
+   "bits": 15,
+   "limbs": 2,
+   "fits_int32": true,
+   "what": ""
+  },
+  "silu_mul.out1": {
+   "max": 16776960,
+   "bits": 24,
+   "limbs": 4,
+   "fits_int32": true,
+   "what": ""
+  },
+  "silu_mul.out2": {
+   "max": 26,
+   "bits": 5,
+   "limbs": 1,
+   "fits_int32": true,
+   "what": ""
+  },
+  "silu_mul.out3": {
+   "max": 0,
+   "bits": 0,
+   "limbs": 1,
+   "fits_int32": true,
+   "what": ""
+  },
+  "softmax.in.raw_qk": {
+   "max": 120466728778,
+   "bits": 37,
+   "limbs": 5,
+   "fits_int32": false,
+   "what": ""
+  },
+  "softmax.out0": {
+   "max": 1048576,
+   "bits": 21,
+   "limbs": 3,
+   "fits_int32": true,
+   "what": "p (FP 20)"
+  },
+  "softmax.out1": {
+   "max": 150276979,
+   "bits": 28,
+   "limbs": 4,
+   "fits_int32": true,
+   "what": "den = sum p"
+  }
+ }
+}
