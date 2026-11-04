@@ -14,7 +14,7 @@ violation sets self.err, which callers test once at the end (model.check).
 
 import torch
 
-from bitexact.bmm import bmm
+from bitexact.bmm import bmm, int_mm
 from bitexact.int8.consts import FR
 from bitexact.int8.ops import EXACT, imm
 from bitexact.int8.segs import Segs
@@ -79,7 +79,7 @@ class IntLlama:
 
     def _gemm(self, a, w):
         if a.is_cuda:
-            return torch._int_mm(a, w.t())                  # int8 limbs, int32 accumulation: exact
+            return int_mm(a, w)                             # int8 limbs, int32 accumulation: exact
         if w.data_ptr() not in self._w64:
             self._w64[w.data_ptr()] = w.double().t().contiguous()
         return imm(a, self._w64[w.data_ptr()])              # float64, exact
