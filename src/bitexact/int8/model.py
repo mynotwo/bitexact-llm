@@ -88,9 +88,11 @@ class IntLlama:
         """pre = (limbs or q, mant, e); returns the layer output at FR (plus x when given)."""
         w, m, fmsh = lin
         c = self._gemm(pre[0], w)
-        y, flag = self.sg.post(c, m, fmsh, pre[1], pre[2]) if x is None else \
+        y, tmax = self.sg.post(c, m, fmsh, pre[1], pre[2]) if x is None else \
             self.sg.post_add(c, m, fmsh, pre[1], pre[2], x)
-        self._flag(flag)
+        # the whole-tensor amax is a separate reduction: inside the fused epilogue it becomes a one-CTA kernel
+        # when Inductor recompiles with symbolic sizes
+        self._flag(tmax.amax() >= 1 << 38)
         return y
 
     def norm_linear(self, x, gamma, lin):

@@ -20,7 +20,7 @@ gate)
   done; wait; ls $O/${TAG}_*_ms*.json ;;
 speed)
   export CUDA_VISIBLE_DEVICES=$1
-  for B in 1 64; do $PY $X/speed.py --model $INT --data $DATA --B $B --gen 512 --out $O/${TAG}_speed_B$B.json > $O/${TAG}_speed_B$B.log 2>&1; grep SPEED $O/${TAG}_speed_B$B.log; done ;;
+  for B in 1 64; do $PY $X/speed.py --model $INT --data $DATA --B $B --gen 512 --prefill --out $O/${TAG}_speed_B$B.json > $O/${TAG}_speed_B$B.log 2>&1; grep SPEED $O/${TAG}_speed_B$B.log; done ;;
 score)   # integer engine scores the plugin's rollouts: TAG = rollout file stem, then bitwise compare with the sampler's log p
   export CUDA_VISIBLE_DEVICES=$1
   $PY $X/../rl_mismatch/bitexact_engine.py score --const $CONST --rollout $O/$TAG.json --tokenizer $DEQ --data $DATA --device cuda --bs 8 --out $O/score_$TAG.json > $O/score_$TAG.log 2>&1

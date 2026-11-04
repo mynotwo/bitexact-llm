@@ -35,11 +35,14 @@ def pre_plain(x, nl):
     return q, mant, e
 
 
-def post(acc, m, fmsh, mant, e):
-    """acc * s_c / qmax * row scale at FR (fmsh = fm + 8 (nl - 1) - 24, a 0-d tensor)."""
+def post(acc, m, fmsh, mant, e, whole=False):
+    """acc * s_c / qmax * row scale at FR (fmsh = fm + 8 (nl - 1) - 24, a 0-d tensor). Second result: per-row max of |t|
+    (the bound flag is max(tmax) >= 2^38, tested outside this function); whole=True returns the flag itself."""
     t = rsh(acc * m, fmsh)
-    flag = t.abs().amax() >= 1 << 38                       # t * mant < 2^62
-    return rsh(t * mant[:, None], (24 - FR - e)[:, None]), flag
+    if whole:
+        return rsh(t * mant[:, None], (24 - FR - e)[:, None]), t.abs().amax() >= 1 << 38      # t * mant < 2^62
+    tmax = t.abs().amax(1)
+    return rsh(t * mant[:, None], (24 - FR - e)[:, None]), tmax
 
 
 def _rope(x, c, s):

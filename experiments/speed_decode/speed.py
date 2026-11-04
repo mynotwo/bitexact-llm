@@ -24,6 +24,7 @@ def main():
     ap.add_argument("--B", type=int, required=True)
     ap.add_argument("--gen", type=int, default=512)
     ap.add_argument("--gpu-mem", type=float, default=0.3)
+    ap.add_argument("--prefill", action="store_true", help="also time cold prefill (prefix cache reset, 1 new token)")
     ap.add_argument("--cprofile", type=int, default=0, help="print top N functions by host time of one extra generate")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
@@ -40,9 +41,9 @@ def main():
     llm = LLM(model=a.model, dtype="bfloat16", max_model_len=a.gen + 600, max_num_seqs=a.B,
               gpu_memory_utilization=a.gpu_mem, enable_prefix_caching=True, seed=0, logits_processors=[IntSampler])
 
-    def run(rep):
+    def run(rep, gen=a.gen):
         ps = [TokensPrompt(prompt_token_ids=prompts[i % 64][0]) for i in range(a.B)]
-        sp = [SamplingParams(temperature=1.0, top_p=1.0, seed=1000 * rep + i + 1, max_tokens=a.gen, ignore_eos=True)
+        sp = [SamplingParams(temperature=1.0, top_p=1.0, seed=1000 * rep + i + 1, max_tokens=gen, ignore_eos=True)
               for i in range(a.B)]
         torch.cuda.synchronize()
         t0 = time.time()
@@ -52,6 +53,13 @@ def main():
 
     run(0)
     reps = [run(1), run(2), run(3)]
+    pre = []
+    if a.prefill:
+        for rep in range(4):                  # first is untimed: new prefill shapes compile
+            llm.reset_prefix_cache()
+            n, d = run(10 + rep, 1)
+            pre.append(d)
+        pre = [round(d, 3) for d in pre[1:]]
     if a.cprofile:
         import cProfile
         import pstats
@@ -64,6 +72,7 @@ def main():
     row = {"B": a.B, "gen": a.gen, "tokens": reps[0][0], "sec": [round(d, 3) for _, d in reps],
            "tok_per_s_median": round(statistics.median(n / d for n, d in reps), 1),
            "ms_per_step_median": round(statistics.median(d for _, d in reps) / a.gen * 1e3, 3),
+           "prefill_sec": pre, "prefill_median": statistics.median(pre) if pre else None,
            "gpu": torch.cuda.get_device_name(0)}
     print("SPEED " + json.dumps(row), flush=True)
     json.dump(row, open(a.out, "w"), indent=1)

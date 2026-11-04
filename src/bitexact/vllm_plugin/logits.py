@@ -32,7 +32,7 @@ def _pre(x, gamma, nl: int):
 
 
 def _post(c, m, fmsh, mant, e, nl: int):
-    return post(join_limbs(c, mant.shape[0], nl), m, fmsh, mant, e)
+    return post(join_limbs(c, mant.shape[0], nl), m, fmsh, mant, e, whole=True)
 
 
 def _fns():
