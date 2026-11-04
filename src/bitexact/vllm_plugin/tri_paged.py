@@ -346,6 +346,7 @@ def weight_table(lut):
     return t.to(torch.int32).contiguous()
 
 
+DEC_PROGRAMS = 528     # decode programs to aim for (4 per SM on H100 / H800)
 SM_TARGET = 264        # programs to aim for (2 per SM on H100 / H800)
 
 
@@ -365,7 +366,7 @@ def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=None, warps=4):
     q = q.contiguous()
     qpos = qpos.contiguous()
     if M <= DEC_BQ and bm is None:
-        return _attend_dec(q, qpos, cache, bt, ptab, nsplit, bn or (64 if R >= 64 else 128), warps)   # 64: less masked tile at short contexts
+        return _attend_dec(q, qpos, cache, bt, ptab, nsplit, bn or 64, warps)  # 64 beats 128 at every R once contexts are long (p3_splitkv sweep)
     BM = bm or (16 if M <= 16 else 64)
     bn = bn or 64
     tiles = triton.cdiv(M, BM) * R * HKV
@@ -396,7 +397,9 @@ def _attend_dec(q, qpos, cache, bt, ptab, nsplit, bn, warps):
     R, _, M, _ = q.shape
     if nsplit is None:
         tiles = R * HKV
-        nsplit = 1 if 2 * tiles >= SM_TARGET else min(64, SM_TARGET // tiles)
+        # R <= 8: as before but 4 programs per SM (base 2); R > 8: split only with >= 2048 table keys per split
+        # (a split costs ~30 us: 3 launches + zero fills, and the table is as wide as max_model_len, not the real context)
+        nsplit = max(1, min(64, DEC_PROGRAMS // tiles, (bt.shape[1] * cache.shape[2] // 2048) if R > 8 else 64))
     fused = nsplit == 1
     new = torch.empty if fused else torch.zeros
     num = new(R, HKV, M, HD, dtype=torch.long, device=q.device)
