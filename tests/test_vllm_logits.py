@@ -26,6 +26,10 @@ class _Fake:
     def _flag(self, cond):
         self.err |= cond
 
+    def check(self):
+        if bool(self.err):
+            raise OverflowError("integer bound violated")
+
     def _gemm(self, a, w):
         return torch._int_mm(a, w.t())
 
