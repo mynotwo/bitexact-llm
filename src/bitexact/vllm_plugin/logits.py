@@ -57,3 +57,28 @@ def lm_logits(m, x):
     y, flag = post_(torch._int_mm(q, w.t()), mm, fmsh, mant, e, m.nl)
     m._flag(flag)
     return y[:M]
+
+
+class DeferredCheck:
+    """IntLlama.check() without the host sync. check() reads the on-device overflow flag with bool(), which blocks the
+    host until the whole step's kernels have finished, so vLLM's async scheduling cannot prepare the next step while
+    the GPU runs. Here the flag is copied to pinned memory with an event and read at the next call, so an overflow
+    raises one step later (the flag is sticky, the run is aborted either way). Nothing a token depends on changes."""
+
+    def __init__(self, m):
+        self.m = m
+        self.on = os.environ.get("BITEXACT_DEFER_CHECK", "1") == "1"
+        self.host = torch.zeros((), dtype=torch.bool, device="cpu").pin_memory() if self.on else None
+        self.event = torch.cuda.Event() if self.on else None
+        self.pending = False
+
+    def __call__(self):
+        if not self.on:
+            return self.m.check()
+        if self.pending:
+            self.event.synchronize()
+            if bool(self.host):
+                raise OverflowError("integer bound violated (int8/model.py)")
+        self.host.copy_(self.m.err, non_blocking=True)
+        self.event.record()
+        self.pending = True

@@ -9,6 +9,7 @@ chk() { for g in "$@"; do u=$(nvidia-smi -i $g --query-gpu=memory.used --format=
 chk "$@"
 case $MODE in
 gate)
+  export BITEXACT_VERIFY_HOST_ROWS=1      # gate runs also assert the host-side rows/positions equal the device ones
   WL="--data $DATA --n-prompts 32 --g 8"
   # one GPU per config, in the order t1/ms1, t1/ms64, t0/ms1, t0/ms64; CFGS="1 2" runs only those, GPUs given in that order
   i=0; j=0; for cfg in "t1 1.0 1" "t1 1.0 64" "t0 0 1" "t0 0 64"; do read n t ms <<< "$cfg"; i=$((i+1))
