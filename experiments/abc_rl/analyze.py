@@ -21,7 +21,7 @@ def jl(p):
 
 def load(runs):
     out = {}
-    for d in sorted(glob.glob(os.path.join(runs, "*_s*"))):
+    for d in sorted(x for x in glob.glob(os.path.join(runs, "*_s*")) if os.path.isdir(x)):
         name = os.path.basename(d)
         arm, seed = name.rsplit("_s", 1)
         if arm in ARMS:
