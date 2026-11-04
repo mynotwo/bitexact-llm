@@ -12,11 +12,15 @@ log p and the trainer log p values come from:
   D      vLLM bf16 with VLLM_BATCH_INVARIANT=1 and TRITON_ATTN; trainer log p values = vLLM's own teacher-forced forward
          (prompt_logprobs), gradient of HF bf16: logp_hf + sg(logp_vllm - logp_hf)
   C      sample integer engine, trainer log p = logp_float + sg(logp_int_rescored - logp_float), PPO clip
+Integer implementation (--int-impl, arms B*, C): old = intq.generate / intq.score (padded batches, one process);
+new = the vLLM plugin (CUDA graphs, tri_paged) samples and bitexact.int8.scorer.Scorer (packed rows) rescores,
+with the same integer log p definition (intq.int_logp).
 One optimizer step per RL step (512 rollouts, gradient accumulation over microbatches), token-mean loss,
 group-normalized advantages, no reference KL (beta = 0; the logged KL is sampler vs trainer).
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -62,6 +66,82 @@ def stats(x):
             "p99_abs": float(a.float().quantile(0.99)) if a.numel() < 16_000_000 else None}
 
 
+def sha_f64(xs):
+    import numpy as np
+    return hashlib.sha256(np.asarray(xs, dtype=np.float64).tobytes()).hexdigest()[:16]
+
+
+class PluginSampler:
+    """New integer sampler: the BitExact vLLM plugin in this process. Its IntLlama (MODEL.m) is a second copy of the
+    int8 weights, updated in place every step (CUDA graphs keep their pointers). The sampler log p of every sampled
+    token is intq.int_logp of the integer logits row, computed on the device inside the plugin's logits processor."""
+
+    def __init__(self, hf, const, work, gpu_mem, max_seqs, max_len=1024):
+        os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+        mdir = os.path.join(work, "int_model")
+        os.makedirs(mdir, exist_ok=True)
+        cfg = json.load(open(os.path.join(hf, "config.json")))
+        cfg.update(architectures=["BitExactLlamaForCausalLM"], bitexact_const=os.path.abspath(const), bitexact_nl=2,
+                   max_position_embeddings=32768)
+        json.dump(cfg, open(os.path.join(mdir, "config.json"), "w"), indent=2)
+        for f in os.listdir(hf):
+            if f != "config.json" and not os.path.lexists(os.path.join(mdir, f)):
+                os.symlink(os.path.realpath(os.path.join(hf, f)), os.path.join(mdir, f))
+        from vllm import LLM
+        from bitexact.vllm_plugin import register, sampler
+        register()
+        self.rows = []                                           # (seeds, ts, device log p) per sampler call
+
+        def _log(s, li, seeds, ts, y):
+            from bitexact.vllm_plugin.model import MODEL
+            self.rows.append((seeds, ts, intq.int_logp(li, y, MODEL.m.ln)))
+        sampler.IntSampler._log = _log
+        orig_init = sampler.IntSampler.__init__
+
+        def _init(s, *a, **k):
+            orig_init(s, *a, **k)
+            s.log = "device"                                     # truthy: apply() calls _log
+        sampler.IntSampler.__init__ = _init
+        self.llm = LLM(model=mdir, dtype="bfloat16", max_model_len=max_len, max_num_seqs=max_seqs,
+                       gpu_memory_utilization=gpu_mem, enable_prefix_caching=True, seed=0,
+                       logits_processors=[sampler.IntSampler])
+        from bitexact.vllm_plugin.model import MODEL
+        self.eng = intq.IntEngine.__new__(intq.IntEngine)
+        self.eng.m, self.eng.prev = MODEL.m, None
+
+    def load(self, c):
+        self.eng.load(c)
+        self.llm.reset_prefix_cache()                            # KV of the previous weights
+
+    def generate(self, prompts, seeds, max_new):
+        from vllm import SamplingParams
+        from vllm.inputs import TokensPrompt
+        self.rows.clear()
+        sp = [SamplingParams(temperature=1.0, top_p=1.0, seed=s, max_tokens=max_new) for s in seeds]
+        outs = self.llm.generate([TokensPrompt(prompt_token_ids=p) for p in prompts], sp, use_tqdm=False)
+        lp = {}
+        for seeds_, ts, d in self.rows:
+            v = d.tolist()
+            for r, (sd, t) in enumerate(zip(seeds_, ts)):
+                if t >= 0 and sd > 0:
+                    lp[(sd, t)] = v[r]
+        toks = [list(o.outputs[0].token_ids) for o in outs]
+        lps = [[lp[(s, t)] for t in range(len(r))] for s, r in zip(seeds, toks)]
+        self.eng.check()
+        return toks, lps
+
+
+def packed_score(eng, scorer, prompts, resps, chunk):
+    """Teacher-forced integer log p with the packed Scorer, in groups of `chunk` sequences (sorted by length)."""
+    out = [None] * len(prompts)
+    order = sorted(range(len(prompts)), key=lambda i: len(prompts[i]) + len(resps[i]))
+    for b0 in range(0, len(order), chunk):
+        idx = order[b0:b0 + chunk]
+        for i, (lp, _) in zip(idx, scorer.score([(prompts[i], resps[i]) for i in idx])):
+            out[i] = lp.tolist()
+    return out
+
+
 def evaluate(eng, vs, tok, test, max_new, bs):
     prompts = [p for p, _ in test]
     res = {}
@@ -70,6 +150,8 @@ def evaluate(eng, vs, tok, test, max_new, bs):
     texts = tok.batch_decode([[x for x in t if x != intq.EOS] for t in it])
     res["int_acc"] = sum(common.grade(t, g)[0] for t, (_, g) in zip(texts, test)) / len(test)
     res["int_sec"] = time.time() - t0
+    if vs is None:
+        return res
     t0 = time.time()
     _, _, ftexts = vs.generate(prompts, [0] * len(prompts), max_new, greedy=True)
     res["float_acc"] = sum(common.grade(t, g)[0] for t, (_, g) in zip(ftexts, test)) / len(test)
@@ -92,8 +174,13 @@ def main():
     ap.add_argument("--mb", type=int, default=16, help="trainer microbatch (sequences)")
     ap.add_argument("--gen-bs", type=int, default=256)
     ap.add_argument("--score-bs", type=int, default=16)
-    ap.add_argument("--eval-every", type=int, default=25)
+    ap.add_argument("--eval-every", type=int, default=25, help="0 = never evaluate")
     ap.add_argument("--eval-n", type=int, default=500)
+    ap.add_argument("--deterministic", action="store_true", help="deterministic torch kernels (needs CUBLAS_WORKSPACE_CONFIG)")
+    ap.add_argument("--int-impl", choices=["old", "new"], default="old", help="integer sampler / scorer (arms B*, C)")
+    ap.add_argument("--plugin-seqs", type=int, default=512, help="vLLM max_num_seqs of the plugin (--int-impl new)")
+    ap.add_argument("--plugin-gpu-mem", type=float, default=0.20)
+    ap.add_argument("--score-chunk", type=int, default=64, help="sequences per Scorer.score call (--int-impl new)")
     ap.add_argument("--gpu-mem", type=float, default=0.18)
     ap.add_argument("--d-attn", default="TRITON_ATTN", help="vLLM attention backend for arm D")
     ap.add_argument("--hf", required=True)
@@ -106,6 +193,8 @@ def main():
     json.dump(vars(a), open(os.path.join(a.out, "args.json"), "w"), indent=1)
     torch.manual_seed(a.seed)
     torch.backends.cuda.matmul.allow_tf32 = False
+    if a.deterministic:
+        torch.use_deterministic_algorithms(True, warn_only=True)
     dev = torch.device("cuda")
     from safetensors.torch import load_file
     from transformers import AutoTokenizer
@@ -118,9 +207,18 @@ def main():
     del sd
     c, fw, qst = intq.quantize(P)
     mdir = floatm.write_model_dir(a.hf, fw, os.path.join(a.work, "deq_model"))
-    vs = floatm.VllmSampler(mdir, a.gpu_mem, max_seqs=512, batch_invariant=a.arm == "D",
-                            attn_backend=a.d_attn if a.arm == "D" else None)          # before the trainer allocates
+    new_int = a.int_impl == "new" and a.arm in ("B", "B_TIS", "B_fp32", "C")
+    vs = pl = scorer = None
+    if new_int:
+        pl = PluginSampler(a.hf, a.const, a.work, a.plugin_gpu_mem, a.plugin_seqs)        # before the trainer allocates
+    else:
+        vs = floatm.VllmSampler(mdir, a.gpu_mem, max_seqs=512, batch_invariant=a.arm == "D",
+                                attn_backend=a.d_attn if a.arm == "D" else None)
     eng = intq.IntEngine(a.const, c, dev)
+    if new_int:                     # Scorer re-specialises m.sg, so it gets its own engine, not the plugin's
+        from bitexact.int8 import scorer as scorer_mod
+        scorer = scorer_mod.Scorer(eng.m)
+        scorer_mod.logp_rows = lambda lg, tgt: intq.int_logp(lg, tgt, eng.m.ln)      # integer log p, as the sampler
     tr = floatm.FloatTrainer(mdir, dev, torch.float32 if a.arm == "B_fp32" else torch.bfloat16)
     torch.backends.cudnn.allow_tf32 = False
     opt = torch.optim.AdamW(list(P.values()), lr=a.lr, betas=(0.9, 0.999), weight_decay=0.0, eps=1e-8)
@@ -136,12 +234,15 @@ def main():
         if step > 0:
             c, fw, qst = intq.quantize(P)
         changed = eng.load(c)
-        vs.load(fw)
+        if vs is not None:
+            vs.load(fw)
+        if pl is not None:
+            pl.load(c)
         tr.set_weights(fw)
         torch.cuda.synchronize()
         t["quantize"] = time.time() - t0
         bound_err = None
-        if step % a.eval_every == 0 or step == a.steps:
+        if a.eval_every and (step % a.eval_every == 0 or step == a.steps):
             try:
                 ev = evaluate(eng, vs, tok, test, a.max_new, a.gen_bs)
             except OverflowError as e:
@@ -161,7 +262,10 @@ def main():
         seeds = [1 + (a.seed * 1000 + step) * 10000 + j for j in range(len(prompts))]
         try:
             if int_sample:
-                resps, slp = intq.generate(eng, prompts, seeds, a.max_new, bs=a.gen_bs)
+                if pl is not None:
+                    resps, slp = pl.generate(prompts, seeds, a.max_new)
+                else:
+                    resps, slp = intq.generate(eng, prompts, seeds, a.max_new, bs=a.gen_bs)
                 texts = tok.batch_decode([[x for x in r if x != intq.EOS] for r in resps])
             else:
                 resps, slp, texts = vs.generate(prompts, seeds, a.max_new)
@@ -181,15 +285,21 @@ def main():
         t0 = time.time()
         ilp = None
         if a.arm == "C":
-            ilp = intq.score(eng, [prompts[i] for i in keep], [resps[i] for i in keep], a.score_bs)
+            kp, kr = [prompts[i] for i in keep], [resps[i] for i in keep]
+            ilp = packed_score(eng, scorer, kp, kr, a.score_chunk) if scorer is not None else \
+                intq.score(eng, kp, kr, a.score_bs)
         elif a.arm == "D":
             ilp = vs.score([prompts[i] for i in keep], [resps[i] for i in keep])
+        if scorer is not None:
+            scorer.c = []                                 # paged K / V cache of the scorer: rebuilt on the next call
+            torch.cuda.empty_cache()                      # return the scorer's temporaries before the trainer runs
         t["score_int"] = time.time() - t0
 
         # ---- trainer forward / backward ----
         t0 = time.time()
         ntok = sum(len(resps[i]) for i in keep)
         acc = {k: [] for k in ("delta", "ratio", "clipped", "w", "fi")}
+        loss_sum = torch.zeros((), dtype=torch.float64, device=dev)
         order = sorted(keep, key=lambda i: len(prompts[i]) + len(resps[i]))
         pos_in_keep = {i: j for j, i in enumerate(keep)}
         for b0 in range(0, len(order), a.mb):
@@ -216,6 +326,7 @@ def main():
             s1, s2 = ratio * A_, ratio.clamp(1 - a.eps, 1 + a.eps) * A_
             loss = -(w * torch.minimum(s1, s2)).sum() / ntok
             loss.backward()
+            loss_sum += loss.detach().double()
             acc["delta"].append(delta)
             acc["ratio"].append(ratio.detach())
             acc["clipped"].append((s2 < s1).detach() & (A_ != 0))
@@ -240,7 +351,11 @@ def main():
                "kl_k3": float((r - 1 - d).mean()), "kl_k1": float((-d).mean()),
                "grad_norm": gnorm, "grad_finite": finite, "int8_changed_frac": changed,
                "fm_min": min(qst["fm"]), "fm_max": max(qst["fm"]), "time": t,
-               "step_sec": sum(t.values()), "mem_gb": torch.cuda.max_memory_allocated() / 2**30}
+               "step_sec": sum(t.values()), "mem_gb": torch.cuda.max_memory_allocated() / 2**30,
+               "loss": float(loss_sum), "loss_hex": float(loss_sum).hex(),
+               "tok_sha": hashlib.sha256(json.dumps([resps[i] for i in keep]).encode()).hexdigest()[:16],
+               "slp_sha": sha_f64([x for i in keep for x in slp[i]]),
+               "ilp_sha": sha_f64([x for l in ilp for x in l]) if ilp is not None else None}
         if acc["w"]:
             w = torch.cat(acc["w"])
             rec["tis_w_mean"], rec["tis_truncated_frac"] = float(w.mean()), float((w >= a.tis_c).float().mean())
