@@ -138,7 +138,8 @@ def _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs,
 @triton.jit
 def _max_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, mx_ptr, M, NSPLIT,
                 sqz, sqm, spz, sc_nb, sc_h, sc_bs, sbt,
-                BS: tl.constexpr, NHKV: tl.constexpr, DH: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr):
+                BS: tl.constexpr, NHKV: tl.constexpr, DH: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr,
+                SPLIT: tl.constexpr):
     pz, h, rm, rd, mok, qpos, a0, a1, a2, lo, hi, bt_ptr = _tile(
         q_ptr, qpos_ptr, bt_ptr, M, sqz, sqm, spz, sbt, NSPLIT, NHKV, DH, BM, BN)
     cbase = c_ptr + h * sc_h
@@ -146,14 +147,17 @@ def _max_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, mx_ptr, M, NSPLIT,
     for k0 in tl.range(lo, hi, BN, num_stages=1):
         raw, valid, off, kok = _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, DH, BN)
         mx = tl.maximum(mx, tl.max(tl.where(valid, raw, NEG), axis=1))
-    tl.atomic_max(mx_ptr + pz * M + rm, mx, mask=mok & (hi > lo))
+    if SPLIT:
+        tl.atomic_max(mx_ptr + pz * M + rm, mx, mask=mok & (hi > lo))
+    else:                                       # one split: the program owns the row; NEG when no key is visible
+        tl.store(mx_ptr + pz * M + rm, mx, mask=mok)
 
 
 @triton.jit
 def _acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, den_ptr, M, NSPLIT,
                 sqz, sqm, spz, sc_nb, sc_h, sc_bs, sbt, snz, snm,
                 BS: tl.constexpr, NHKV: tl.constexpr, DH: tl.constexpr, ZSH: tl.constexpr, ZMUL: tl.constexpr,
-                ZLO: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr):
+                ZLO: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr, SPLIT: tl.constexpr):
     pz, h, rm, rd, mok, qpos, a0, a1, a2, lo, hi, bt_ptr = _tile(
         q_ptr, qpos_ptr, bt_ptr, M, sqz, sqm, spz, sbt, NSPLIT, NHKV, DH, BM, BN)
     cbase = c_ptr + h * sc_h
@@ -185,9 +189,13 @@ def _acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, den_p
         n4 += c4
     num = n0.to(tl.int64) + (n1.to(tl.int64) << 8) + (n2.to(tl.int64) << 16) \
         + (n3.to(tl.int64) << 24) + (n4.to(tl.int64) << 32)
-    any_k = hi > lo
-    tl.atomic_add(num_ptr + pz * snz + rm[:, None] * snm + rd[None, :], num, mask=mok[:, None] & any_k)
-    tl.atomic_add(den_ptr + pz * M + rm, den, mask=mok & any_k)
+    if SPLIT:
+        any_k = hi > lo
+        tl.atomic_add(num_ptr + pz * snz + rm[:, None] * snm + rd[None, :], num, mask=mok[:, None] & any_k)
+        tl.atomic_add(den_ptr + pz * M + rm, den, mask=mok & any_k)
+    else:                                       # one split: plain stores; num / den are 0 when no key was visible
+        tl.store(num_ptr + pz * snz + rm[:, None] * snm + rd[None, :], num, mask=mok[:, None])
+        tl.store(den_ptr + pz * M + rm, den, mask=mok)
 
 
 # Decode (M <= BQ = 4 queries per request and KV head): the 3 limbs of the BQ queries are stacked as the rows
@@ -370,7 +378,9 @@ def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=None, warps=4):
     from the tile's own last position, so equal work per split and no host-side lengths (graph safe).
     Kernel 1: per-split row maxima, combined with an int64 atomic max. Kernel 2: weights from the global
     maximum, per-split num / den added with int64 atomic adds. Max and integer sums are exact in any
-    order, so the result does not depend on nsplit or on scheduling."""
+    order, so the result does not depend on nsplit or on scheduling.
+    With nsplit == 1 each output element has exactly one writer: the kernels store instead of using atomics, and
+    mx / num / den are not initialised (same values: a row with no visible key gets NEG / 0 / 0 in both paths)."""
     R, nh, M, dh = q.shape
     zmul, zsh = score_rule(dh)
     HKV, HD = nh, dh
@@ -384,17 +394,23 @@ def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=None, warps=4):
     tiles = triton.cdiv(M, BM) * R * HKV
     if nsplit is None:
         nsplit = max(1, min(64, triton.cdiv(SM_TARGET, tiles)))
-    mx = torch.full((R, HKV, M), NEG.value, dtype=torch.long, device=q.device)
-    num = torch.zeros(R, HKV, M, HD, dtype=torch.long, device=q.device)
-    den = torch.zeros(R, HKV, M, 1, dtype=torch.long, device=q.device)
+    split = nsplit > 1
+    if split:           # atomics accumulate into initialised buffers
+        mx = torch.full((R, HKV, M), NEG.value, dtype=torch.long, device=q.device)
+        num = torch.zeros(R, HKV, M, HD, dtype=torch.long, device=q.device)
+        den = torch.zeros(R, HKV, M, 1, dtype=torch.long, device=q.device)
+    else:               # every element is written by exactly one program: no initialisation (same values)
+        mx = torch.empty((R, HKV, M), dtype=torch.long, device=q.device)
+        num = torch.empty(R, HKV, M, HD, dtype=torch.long, device=q.device)
+        den = torch.empty(R, HKV, M, 1, dtype=torch.long, device=q.device)
     grid = (triton.cdiv(M, BM), R * HKV, nsplit)
     common = (q.stride(1), q.stride(2), qpos.stride(0), cache.stride(0), cache.stride(1), cache.stride(2),
               bt.stride(0))
     _max_kernel[grid](q, qpos, cache, bt, mx, M, nsplit, *common,
-                      BS=cache.shape[2], NHKV=HKV, DH=HD, BM=BM, BN=bn, num_warps=warps)
+                      BS=cache.shape[2], NHKV=HKV, DH=HD, BM=BM, BN=bn, SPLIT=split, num_warps=warps)
     _acc_kernel[grid](q, qpos, cache, bt, ptab, mx, num, den, M, nsplit, *common, num.stride(1),
                       num.stride(2), BS=cache.shape[2], NHKV=HKV, DH=HD, ZSH=zsh, ZMUL=zmul or 0,
-                      ZLO=EXP_MIN << FA, BM=BM, BN=bn, num_warps=warps)
+                      ZLO=EXP_MIN << FA, BM=BM, BN=bn, SPLIT=split, num_warps=warps)
     return num, den
 
 

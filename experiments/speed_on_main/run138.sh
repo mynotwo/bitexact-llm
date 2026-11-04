@@ -28,7 +28,7 @@ for g in $*; do chk $g; done
 B="$PY $X/scorer_bench.py --const $CONST --model $DEQ --data $DATA"
 r() { "$@" 2>&1 | grep '^{' | tee -a $J || true; }
 case $MODE in
-pytest) CUDA_VISIBLE_DEVICES=$1 $PY -m pytest -q -p no:cacheprovider tests > $O/${TAG}_pytest.log 2>&1; tail -n 2 $O/${TAG}_pytest.log ;;
+pytest) CUDA_VISIBLE_DEVICES=$1 PYTHONPATH=$PYTHONPATH:$HOME/speed_decode/pytest_pkg $PY -m pytest -q -p no:cacheprovider tests > $O/${TAG}_pytest.log 2>&1; tail -n 2 $O/${TAG}_pytest.log ;;
 suite) GPUS="$1" PY=$PY MODEL=$INT CONST=$CONST OUT=$O/suite_$TAG bash tests/vllm/run_tests.sh $TAG > $O/${TAG}_suite.log 2>&1
   grep -h "compare_exit\|compare_long_exit\|token_seqs_diff\|Traceback" $O/${TAG}_suite.log | head -40 ;;
 scheck) export CUDA_VISIBLE_DEVICES=$1; J=$O/$TAG.scheck.jsonl; : > $J; M="--mode ${SMODE:-packed}"
