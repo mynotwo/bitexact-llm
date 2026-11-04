@@ -39,7 +39,7 @@ def hf_score(a, items):
         for j, (_, p, r) in enumerate(b):
             ids[j, :len(p) + len(r)] = torch.tensor(p + r)
             mask[j, :len(p) + len(r)] = 1
-        h = model.model(input_ids=ids.cuda(), attention_mask=mask.cuda()).last_hidden_state
+        h = model.model(input_ids=ids.cuda(), attention_mask=mask.cuda() if len(b) > 1 else None).last_hidden_state
         for j, (s, p, r) in enumerate(b):
             P, n = len(p), len(r)
             lps, ams = [], []
