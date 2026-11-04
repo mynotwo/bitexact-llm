@@ -484,7 +484,31 @@ Plugin limitations:
 GSM8K, 1,024 rollouts). With stock vLLM bf16 only 13–17% replay token for token on rerun (same config, new batch
 or new GPU), and sampler and trainer (HF bf16) differ on 99.99% of token log-probs. With the plugin and the
 standalone integer engine, 1,007/1,007 flagged failures replay on H800, H100 and CPU and the sampler–trainer
-difference is exactly zero. Inference only; no training was run.
+difference is exactly zero. That experiment ran inference only.
+
+[experiments/abc_rl](experiments/abc_rl/RESULTS.md) then trained Llama-3.2-1B on GSM8K with GRPO (200 steps, 64
+rollouts per step, 4 seeds per arm), varying only which arithmetic gives the sampler and trainer log p; gradients
+always come from the HF bf16 graph. With integer sampling and integer rescoring (the integer value is used, the
+float graph supplies the gradient) the sampler–trainer difference is 0 on every token of every step, as it is
+with vLLM's batch-invariant mode; their step-200 accuracies were 0.177 ± 0.024 and 0.181 ± 0.015 (no difference
+detected). Integer sampling with a bf16 trainer and no correction collapsed in 2 of 2 seeds.
+
+The integer arm runs on the vLLM plugin in-process: after each optimizer step the new int8 weights are copied
+into the live model (load-time bounds are re-checked first; a failure raises before anything is written), and a
+scoring request returns exact integer log p from the prefill pass. Rollouts and log p are bit-identical to the
+standalone integer engine. A fused prefill path (four kernels per layer instead of about 28) raised 1B prefill
+throughput 1.41x to 1.59x, to about 40% of stock vLLM. Seconds per RL step on one H800, same session (two runs):
+
+| Arm | Step | Sampling | Rescoring | Trainer |
+|---|---|---|---|---|
+| bf16 vLLM sampler, bf16 trainer | 11.4 / 10.3 | 5.9 / 5.2 | 0 | 5.5 / 5.2 |
+| vLLM batch-invariant sampler and rescoring | 14.0 / 13.2 | 5.4 / 5.1 | 3.2 / 2.9 | 5.3 / 5.2 |
+| integer, standalone engine | 28.2 | 15.1 | 7.7 | 5.3 |
+| integer, plugin | 15.1 / 14.3 | 5.7 / 5.3 | 4.0 / 3.8 | 5.4 / 5.2 |
+
+The standalone-engine row is from an earlier session on the same GPU type. The HF bf16 backward itself was not
+bit-reproducible on that host (two runs with the same rollouts gave different gradient norms at step 0), so
+whole training trajectories do not repeat exactly even when sampling and log p do.
 
 ## Limitations
 
