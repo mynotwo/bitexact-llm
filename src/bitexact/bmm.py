@@ -104,11 +104,11 @@ def bmm(a, b, na=3, nb=3):
 # some split-K / stream-K) that are up to 2x faster on prefill shapes. Every algorithm sums int8 products in int32
 # with an integer epilogue (alpha = 1, beta = 0): a partial sum over any subset of k is bounded by
 # K * 128 * 128 < 2^31 for K < 2^17, and int32 addition is exact, so all algorithms return the same integers.
-# BITEXACT_GEMM=lt selects it (default: torch._int_mm). On the first call of each shape (outside CUDA graph
+# Default on CUDA (BITEXACT_GEMM=intmm selects torch._int_mm). On the first call of each shape (outside CUDA graph
 # capture) the heuristic's candidates and torch._int_mm are timed and the fastest is kept; the choice only
 # affects speed. Falls back to torch._int_mm for operands it does not cover.
 
-GEMM = os.environ.get("BITEXACT_GEMM", "intmm")
+GEMM = os.environ.get("BITEXACT_GEMM", "lt" if torch.cuda.is_available() else "intmm")
 _LT = {}                                                    # lib, handle, per-device workspaces, plans
 _WS = 32 << 20
 _NALGO = 8

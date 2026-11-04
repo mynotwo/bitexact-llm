@@ -84,3 +84,22 @@ Estimate vs measurement: the profile put GEMMs at 17.5% (GSM8K) and 8.5% (4k b4)
 ## Files
 
 `bench_triton.py`, `bench_lt_algos.py`, `bench_path.py`, `attn_tiles.py`. Results are in `results/`: `bench.json` (Triton vs `_int_mm`), `lt.json` (best cuBLASLt candidate and kernel name per shape), `path.json` (`int_mm` lt path), `attn.json`, `scorer_gate.jsonl`, `decode_gate.txt`, `speed.jsonl`, `pytest.log`. The gate and speed runs used `experiments/speed/run_scorer.sh` and `run_decode.sh` with code tag `gemm` and `BITEXACT_GEMM` set in the environment.
+
+## H800 check
+
+Scorer gate, all 8 configurations, `BITEXACT_GEMM=lt`, on GPU 0 of host 141 (H800, 0 MiB before the run; torch 2.13.0+cu129; env `/data41/audreymao/bitexact_port/venv`; code copy `/data41/audreymao/speed_gemm_lt_20261104`, commit e4f1180). Every row hash equals the plugin hash, and every sequence hash and float64 log p bit pattern equals the reference recorded on H100 of 138:
+
+| config | rows equal plugin hash | sequences equal ref hash / log p bits |
+|---|---|---|
+| GSM8K 128 seq, batch 8 | 28,083 / 28,083 | 128 / 128 and 128 / 128 |
+| GSM8K 128 seq, batch 64 | 28,083 / 28,083 | 128 / 128 and 128 / 128 |
+| GSM8K 128 seq, batch 1 | 28,083 / 28,083 | 128 / 128 and 128 / 128 |
+| GSM8K 128 seq, batch 8, shuffled | 28,083 / 28,083 | 128 / 128 and 128 / 128 |
+| 4k 16 seq, batch 4 | 65,536 / 65,536 | 16 / 16 and 16 / 16 |
+| 4k 16 seq, batch 1 | 65,536 / 65,536 | 16 / 16 and 16 / 16 |
+| 4k 16 seq, batch 8 | 65,536 / 65,536 | 16 / 16 and 16 / 16 |
+| 4k 16 seq, batch 4, shuffled | 65,536 / 65,536 | 16 / 16 and 16 / 16 |
+
+All 8 configurations are bit-equal, so the default is now `lt` on CUDA. `BITEXACT_GEMM=intmm` keeps `torch._int_mm`. On CPU the default stays `intmm`.
+
+Default-path check on 138 (H100, GPU 4, `BITEXACT_GEMM` unset, code copy `~/speed_gemm_default`): `tests/test_lt_gemm.py` and `tests/test_int8_ops.py` pass (10 tests), and the same 8 configurations pass with the default (8 / 8 bit-equal, rows equal plugin hash, sequence hashes and log p bits equal to the reference) on a free H100 of 138 (GPU 4, 0 MiB before the run).
