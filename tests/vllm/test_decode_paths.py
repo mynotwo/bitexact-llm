@@ -21,7 +21,6 @@ pytestmark = [pytest.mark.gpu,
 
 def _run(use_graph):
     from bitexact.int8.model import IntLlama
-    from bitexact.llama import Cache
     from bitexact.vllm_plugin import paged, tri_paged
     from bitexact.vllm_plugin.graph import decode_forward
     m = IntLlama(torch.load(CONST, map_location="cpu", weights_only=False), "cuda", nl=2, compiled=True)
@@ -50,7 +49,7 @@ def _run(use_graph):
     # integer reference: bitexact.int8 on its own cache
     refs = []
     for p in prompts:
-        c = Cache(m.L, 1, len(p) + steps, dev)
+        c = m.new_cache(1, len(p) + steps)
         refs.append((c, m.forward(torch.tensor([p], device=dev), torch.arange(len(p), device=dev)[None], c)[:, -1]))
     li = m.logits(last)
     tok = torch.zeros(R, dtype=torch.long, device=dev)
