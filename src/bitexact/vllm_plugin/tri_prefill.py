@@ -15,6 +15,8 @@ s <= its position, so the grouping of queries into tiles cannot change a bit. te
 compares with tri_paged.attend.
 """
 
+import os
+
 import torch
 import triton
 import triton.language as tl
@@ -23,8 +25,8 @@ from bitexact.int8.consts import EXP_MIN, FA
 from bitexact.int8.segs import score_rule
 from bitexact.vllm_plugin.tri_paged import (NEG, _limb_parts, _load_v, _scores, _split, _zscale)
 
-BM = 64                  # query rows per tile (BM // G tokens)
-BN = 64                  # keys per step
+BM = int(os.environ.get("BITEXACT_PREFILL_BM", "32"))     # query rows per tile (BM // G tokens)
+BN = int(os.environ.get("BITEXACT_PREFILL_BN", "64"))     # keys per step
 
 
 @triton.jit

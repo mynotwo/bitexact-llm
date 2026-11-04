@@ -23,7 +23,8 @@ def test_prefill_attend_matches_paged(bm):
         # (qlen, seq_len): fresh prompts, a later chunk, one-token chunks, odd lengths
         reqs = [(37, 37), (64, 300), (1, 20), (130, 130), (5, 700), (16, 16), (200, 900)]
         bt = torch.randint(1, nb, (len(reqs), 64), device="cuda", generator=g).to(torch.int64)
-        N = sum(q for q, _ in reqs) + 3                           # trailing rows without attention
+        tot = sum(q for q, _ in reqs)
+        N = tot + 3                           # trailing rows without attention
         q = torch.randint(-lim, lim + 1, (N, HKV, G, HD), device="cuda", generator=g)
         pos = torch.zeros(N, dtype=torch.long, device="cuda")
         pre, t0 = [], 0
@@ -42,4 +43,4 @@ def test_prefill_attend_matches_paged(bm):
             rn = rn.view(HKV, G, ql, HD).permute(2, 0, 1, 3)
             rd = rd.view(HKV, G, ql, 1).permute(2, 0, 1, 3)
             assert torch.equal(num[t0:t0 + ql], rn) and torch.equal(den[t0:t0 + ql], rd), (lim, r)
-        assert not num[t0:].any() and bool((den[t0:] == 1).all())     # untouched rows
+        assert not num[tot:].any() and bool((den[tot:] == 1).all())     # untouched rows

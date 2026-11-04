@@ -63,8 +63,23 @@ TABLE = {
 }
 
 
+# Prefill (rows = 2 x tokens, > 256): (N, K) -> [(max_rows, cfg)], used from LARGE_MIN rows up; below that cutlass wins
+# (experiments/perf/p5_prefill/gemm_large.py, H800: Triton 1.2 to 1.4x faster than _int_mm at 2048..65536 rows).
+LARGE_MIN = 2048
+LARGE = {
+    (3072, 2048): [(1 << 30, (128, 128, 128, 1, 8, 3))],
+    (2048, 2048): [(1 << 30, (128, 128, 128, 1, 8, 3))],
+    (16384, 2048): [(16384, (256, 128, 128, 1, 8, 4)), (1 << 30, (128, 128, 128, 1, 8, 3))],
+    (2048, 8192): [(4096, (128, 128, 128, 1, 8, 3)), (1 << 30, (128, 128, 128, 1, 4, 3))],
+}
+
+
 def int_mm(a, w):
     """Exact int32 a @ w.t(); skinny Triton kernel where the table has a faster config, else torch._int_mm."""
+    if a.shape[0] >= LARGE_MIN and (a.is_contiguous() and w.is_contiguous()):
+        for mx, cfg in LARGE.get((w.shape[0], w.shape[1]), ()):
+            if a.shape[0] <= mx:
+                return gemm(a, w, cfg)
     rows = TABLE.get((w.shape[0], w.shape[1]))
     if rows is not None and a.shape[0] <= 256 and a.is_contiguous() and w.is_contiguous():
         for mx, cfg in rows:
