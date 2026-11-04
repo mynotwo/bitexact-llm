@@ -113,6 +113,24 @@ e2e() { D=$O/e2e; mkdir -p $D
   done; done; done
   grep -H "^RESULT" $D/*.log | cut -c1-300 | tee -a $SUM; }
 
+s8() { D=$O/s8; mkdir -p $D; export GPU_UTIL=0.6; RS="$PY tests/vllm/run_serve.py --model $M8"
+  run $D/ref.log 3000 repo $PY tests/vllm/run_ref.py --const $C8 --out $D/ref
+  run $D/alone_pc1.log 3000 repo $RS --mode alone --prefix-cache 1 --out $D/alone_pc1
+  run $D/busy_pc1_s0.log 3000 repo $RS --mode busy --prefix-cache 1 --arrival-seed 0 --out $D/busy_pc1_s0
+  run $D/busy_pc0_s1.log 3000 repo $RS --mode busy --prefix-cache 0 --arrival-seed 1 --out $D/busy_pc0_s1
+  run $D/busy_pc1_s2_b64.log 3000 repo $RS --mode busy --prefix-cache 1 --arrival-seed 2 --budget 64 --out $D/busy_pc1_s2_b64
+  run $D/busy_eager_s4.log 3000 repo env BITEXACT_GRAPHS=0 BITEXACT_COMPILE=0 $RS --mode busy --prefix-cache 1 --arrival-seed 4 --max-seqs 128 --out $D/busy_eager_s4
+  run $D/busy_vllmgraph_s5.log 3000 repo $RS --mode busy --prefix-cache 1 --arrival-seed 5 --eager 0 --out $D/busy_vllmgraph_s5
+  run $D/alone_vllmgraph.log 3000 repo $RS --mode alone --prefix-cache 1 --eager 0 --out $D/alone_vllmgraph
+  ( cd $S/repo && PYTHONPATH=$S/repo/src:$S/repo/tests/vllm $PY tests/vllm/compare.py $D/ref $D/alone_pc1 $D/busy_pc1_s0 $D/busy_pc0_s1 \
+      $D/busy_pc1_s2_b64 $D/busy_eager_s4 $D/busy_vllmgraph_s5 $D/alone_vllmgraph ) > $D/compare.txt 2>&1; echo "s8 compare_exit $?" | tee -a $SUM
+  tail -n 4 $D/compare.txt | tee -a $SUM
+  unset GPU_UTIL; }
+bi8() { D=$O/bi8; mkdir -p $D
+  run $D/bi_graph.log 3000 repo $PY experiments/perf/p3_8b/batch_inv.py --model $M8 --out $D/bi_graph.json --eager 0
+  run $D/bi_eager.log 3000 repo env BITEXACT_GRAPHS=0 $PY experiments/perf/p3_8b/batch_inv.py --model $M8 --out $D/bi_eager.json --eager 1
+  grep -H "BATCH_INV" $D/*.log | tee -a $SUM; }
+
 longctx() { D=$O/longctx; mkdir -p $D
   for S_ in 16384; do for b in 1 8; do for t in $TREES; do
     run $D/${t}_s${S_}_b$b.log 2400 $t $PY tests/vllm/longctx_step.py --const $CONST --model-dir $MODEL --S $S_ --B $b
