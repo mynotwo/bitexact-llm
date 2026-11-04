@@ -12,10 +12,10 @@ Each cell compares against the reference run of the same arm (vLLM 0.32.0, TP 1,
 | vLLM 0.33.0 (torch 2.14.0, Triton 3.8.0) | bitwise 0 (plugin T=1 and greedy, engine scorer) | differs (1.3e-4, 17.2%); tokens T=1 254/256, greedy 256/256 (greedy lp differ on 14.0% of tokens, max 4.8e-7) |
 | vLLM 0.28.0 (torch 2.13.0, Triton 3.7.1) | plugin does not load (vLLM API missing); engine scorer under this venv's torch: bitwise 0 | differs (0.0244, 99.95%); tokens T=1 0/256, greedy 128/256 |
 | vLLM 0.25.0 (torch 2.11.0, Triton 3.6.0) | plugin does not load (vLLM API missing); engine scorer under this venv's torch: bitwise 0 | differs (0.0243, 99.96%); tokens T=1 0/256, greedy 88/256 |
-| TP 2 vs TP 1 | not applicable: the plugin has no sharding. Run with `tensor_parallel_size=2` it replicates the full integer model on both ranks; output bitwise 0 vs TP 1 | differs (0.0241, 99.97%); tokens T=1 25/256, greedy 80/256 |
-| TP 4 vs TP 1 | not tested (no sharding, see TP 2) | differs (0.0242, 99.96%); tokens T=1 32/256, greedy 112/256 |
+| TP 2 vs TP 1 | plugin: replication only (`tensor_parallel_size=2` runs the full model on both ranks), bitwise 0. Standalone engine with a real split: bitwise 0 on 53,387 tokens (`experiments/tp_shard`) | differs (0.0241, 99.97%); tokens T=1 25/256, greedy 80/256 |
+| TP 4 vs TP 1 | not tested in the plugin (replication only, see TP 2); the standalone engine sharded for real at TP 2 and TP 4 is bitwise 0 vs TP 1 (`experiments/tp_shard`) | differs (0.0242, 99.96%); tokens T=1 32/256, greedy 112/256 |
 | batch size within TP 1 (max_num_seqs 1 / 64 vs 256; scorer batch 8 vs 128 or engine batch 1 / 64 vs 8) | bitwise 0 (sampler and scorer) | bitwise 0 (sampler and scorer) |
-| batch size within TP 2 and within TP 4 (max_num_seqs 1 / 64 vs 256) | not applicable | bitwise 0 (both TP sizes) |
+| batch size within TP 2 and within TP 4 (max_num_seqs 1 / 64 vs 256) | not applicable in the plugin (replication). The sharded engine scored the workload at batch 1 and 8 with identical results (`experiments/tp_shard`) | bitwise 0 (both TP sizes) |
 | GPU type: H800 sampler (abc_measure Q1) vs H100 sampler, 256 common seeds | bitwise 0 | bitwise 0 |
 | GPU type: H800 plugin rollouts (1,024 seqs, 215,899 tokens) scored by H100 engine | bitwise 0 | (H800 sampler scored on H100: bitwise 0, measured in abc_measure) |
 | CPU recomputation, 16 seqs | bitwise 0 (x86 CPU engine vs H100 engine and vs H100 plugin, 3,496 tokens, all logits-row hashes equal) | could not run batch-invariant mode on CPU; plain PyTorch CPU: bf16 differs (0.0253, 100%), fp32 differs (0.0229, 100%) |
@@ -31,6 +31,7 @@ Each cell compares against the reference run of the same arm (vLLM 0.32.0, TP 1,
 - **C under `tensor_parallel_size=2`.** In-process registration does not reach TP worker processes (`Model architectures ['BitExactLlamaForCausalLM'] are not supported`). With the package installed in the experiment's own venv (entry points), TP 2 runs, both ranks log every row (106,946 rows = 2 x 53,473) with identical hashes, and the output equals TP 1. The model class has no tensor-parallel layers, so this is replication, not sharding.
 - **C cross-GPU (baseline claim, now inside this branch).** Two checks. First, the H100 plugin re-sampling the first 256 Q1 requests reproduces the H800 plugin rollouts from abc_measure. Second, the H100 standalone engine scores all 1,024 H800 rollouts (215,899 tokens) with 0 hash differences. The int8 constants file rebuilt on 138 from the original checkpoint has the same internal SHA-256 (`e669be2a...`) as the one on 141.
 - **D cross-GPU sampler (not measured before).** The H100 batch-invariant sampler reproduces the H800 one (abc_measure `q1_D`, vLLM 0.32.0+cu129 on driver 535) for all 256 common sequences, bit for bit. The H100 run used vLLM 0.32.0 with torch 2.13.0+cu130 on driver 595, so this pair also changes the CUDA build (12.9 to 13.0).
+- **C with real sharding (new, measured in `experiments/tp_shard`).** An integer engine split by tensor parallelism stays bit-invariant. `tpmodel.shard` splits `wqkv` by head (`wo` on the input side over those columns), `wgu` by FF channel with gate row `j` on the same rank as up row `j` (`wd` on the input side), and `lm` by vocabulary; the two K-splits all-reduce their int64 accumulators, and both quantize with a globally all-reduced row `amax` (the only correctness requirement beyond the split itself). Against TP 1 of the same code path — itself identical to the shipped `IntLlama` — TP 2 and TP 4 agree on every position: 53,387/53,387 logits-row hashes and `int_logp` on the GSM8K workload, 1,024/1,024 on greedy 256-token replay, 256/256 on Gumbel-max T=1, at batch 1 and at batch 8, on H800 and on H100. Cost, not benefit: 2,131 vs 2,435 tok/s at B = 256 (TP 2 vs unsharded on one GPU; TP 4 is 1,978), and roughly +25% wall time per decode step, because at 1B the step is launch-bound and the four all-reduces per layer cost more than the shrunken GEMMs save.
 - **D on CPU, attempts:**
   1. vLLM 0.32.0 (CUDA wheel) with no GPU visible: engine init fails, `AssertionError: DP adjusted local rank 0 is out of bounds for 0 devices`.
   2. vLLM's `init_batch_invariance()` called in a CPU-only process before an HF forward: aborts with `Cuda error ... 'no CUDA-capable device is detected'`. In 0.32.0 the mode registers its aten overrides only for CUDA and XPU dispatch keys.
@@ -40,14 +41,13 @@ Each cell compares against the reference run of the same arm (vLLM 0.32.0, TP 1,
 ## Inferences (not directly tested)
 
 - D's guarantee covers one software build and one parallel layout. A trainer that recomputes log p needs the same vLLM build, the same TP size and a GPU. A model trained at TP 1 and served at TP 4, or rescored after a vLLM upgrade, gets bf16-sized mismatch back (0.024 mean |Δ|, the size of the A arm in abc_measure).
-- An integer engine sharded by tensor parallelism would stay invariant by construction. The int32/int64 partial sums are exact, so any summation order gives the same integer. BitExact has no sharded implementation, so this is untested.
 - The C failures on vLLM 0.25 / 0.28 are an API-compatibility cost, not a numerical one. The engine that produces the numbers runs unchanged on every torch tested. Porting the sampler hook to an older vLLM was not tried.
 
 ## Not tested
 
 - vLLM version changes on H800 (141). The vLLM 0.31 / 0.33 wheels on the mirror pull cu130 torch, which does not start on 141's driver 535 (`torch.cuda.is_available() == False`). All version tests ran on H100.
 - A CUDA-build change with everything else fixed (same vLLM, same GPU, cu129 vs cu130). It is only mixed into the H800 vs H100 pair.
-- C at TP 4, and C at TP 2 with real sharding (none exists).
+- C through the vLLM plugin at TP 4 (the plugin replicates; the sharded standalone engine was tested at TP 4).
 - D on a CPU build of vLLM (only 0.9.2 available).
 - Batch size 1 vs 64 for the plugin under TP 2.
 
