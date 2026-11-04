@@ -5,7 +5,9 @@ sys.path.insert(0, __file__.rsplit("/", 1)[0] + "/../p2_gemm")
 from bench_graph import graph_us
 from bitexact.int8.gemm_skinny import gemm
 SH = {"wqkv": (6144, 4096), "wo": (4096, 4096), "wgu": (28672, 4096), "wd": (4096, 14336), "lm": (128256, 4096)}
-ROWS = [24, 64, 128, 256]
+import os
+ROWS = [int(x) for x in os.environ.get("ROWS", "24,64,128,256").split(",")]
+EXT = os.environ.get("EXT") == "1"   # wider grid: BM 256, BK 64, 2..6 stages, 16 warps
 names = sys.argv[2:] or list(SH)
 out = {}
 for name in names:
@@ -18,10 +20,10 @@ for name in names:
         try: ti = graph_us(lambda i: torch._int_mm(a, ws[i % ncp].t()), 3 * ncp)
         except Exception: ti = float("nan")
         best = (1e9, None)
-        BMs = [16, 32] if R <= 64 else [32, 64, 128]
-        for cfg in itertools.product(BMs, [32, 64, 128, 256], [128, 256], [1, 2, 4, 8], [4, 8], [3, 4, 5]):
+        BMs = [16, 32] if R <= 64 else [32, 64, 128] + ([256] if EXT else [])
+        for cfg in itertools.product(BMs, [32, 64, 128, 256], [64, 128, 256] if EXT else [128, 256], [1, 2, 4, 8], [4, 8, 16] if EXT else [4, 8], [2, 3, 4, 5, 6] if EXT else [3, 4, 5]):
             BM, BN, BK, S, nw, ns = cfg
-            if K % (BK * S) or (BM + BN) * BK * ns > 190000: continue
+            if K % (BK * S) or (BM + BN) * BK * ns > 225000: continue
             try:
                 if not torch.equal(gemm(a, ws[0], cfg), ref): print("MISMATCH", cfg); continue
                 x = graph_us(lambda i: gemm(a, ws[i % ncp], cfg), 3 * ncp)
