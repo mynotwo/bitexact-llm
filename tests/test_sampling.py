@@ -1,6 +1,7 @@
 """Integer Gumbel noise against the float64 formula, and the sampling rule (CPU)."""
 
 import numpy as np
+import pytest
 import torch
 
 from bitexact import sampling
@@ -36,3 +37,14 @@ def test_sample_rule():
     g = torch.tensor([[0, 0, 0, 100]])
     assert sampling.sample(li, 1, 1, g).tolist() == [3]
     assert sampling.temp_ratio(0.7) == (7, 10) and sampling.temp_ratio(0) == (0, 1)
+
+
+def test_host_rows_path_off_under_speculative_decoding(monkeypatch):
+    """seq_lens_upper_bound is exact only without speculative decoding, so the host-side rows path is off then."""
+    from types import SimpleNamespace
+    pytest.importorskip("vllm")
+    from bitexact.vllm_plugin.sampler import IntSampler
+    rs = SimpleNamespace(max_num_reqs=4)
+    monkeypatch.delenv("BITEXACT_HOST_ROWS", raising=False)
+    assert IntSampler(SimpleNamespace(speculative_config=None), rs).host_rows
+    assert not IntSampler(SimpleNamespace(speculative_config=object()), rs).host_rows
