@@ -8,8 +8,15 @@
 #   run138.sh gate TAG G1 G2 G3 G4         decode rollouts T=1/greedy x B=1/64  (then: gate.py BASE TAG)
 #   run138.sh dspeed TAG G                 decode ms/step, B = 1, 64 (512 tokens), 512 (256 tokens), median of 3
 #   run138.sh bench TAG G                  main's README throughput (tests/vllm/bench.py, int8 T=0/1, B 1/32/128), 3 reps
+#   AB="t1 t2 .." (or t1_t2) ROUNDS=3 run138.sh ab KIND G   same-GPU interleaved comparison: KIND = dspeed | bench | stime, one
+#                                          round = every tag once, in order; outputs as KIND with tag t_rR
 # Every GPU must show 0 MiB at launch.
 MODE=$1; TAG=$2; shift 2
+if [ $MODE = ab ]; then
+  for r in $(seq ${ROUNDS:-3}); do for t in ${AB//_/ }; do
+    ln -sfn $HOME/som/code_$t $HOME/som/code_${t}_r$r
+    SMODE=$( [ -e $HOME/som/code_$t/src/bitexact/int8/scorer.py ] && echo packed || echo old ) \
+      bash $0 $TAG ${t}_r$r "$@"; done; done; exit; fi
 H=audreymao@10.73.164.138
 if [ $MODE = sync ]; then
   R="$(cd $(dirname $0)/../.. && pwd)"
