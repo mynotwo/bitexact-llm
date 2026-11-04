@@ -414,7 +414,7 @@ dumps identical) plus the 8B and speculative-decoding checks below:
 - Per-request sampler seeds and step counters are built on the GPU from vectorised per-slot arrays, not in a
   Python loop per request. Step time not spent in GPU kernels at batch 128, T = 1 fell from 2.14 to 0.31 ms.
 - RMSNorm with the residual add, the QKV split with RoPE, and the attention output requantization run as three
-  fused Triton kernels (1B geometry; `BITEXACT_FUSE=0` turns them off). Kernels per decode step fell from 486
+  fused Triton kernels (1B and 8B geometries; `BITEXACT_FUSE=0` turns them off). Kernels per decode step fell from 486
   to 206.
 - Long-context split-KV attention uses 64-key tiles and a new split-count rule. Decode at S = 16,384 fell from
   2.38 to 1.97 ms per step at batch 1 and from 6.58 to 5.21 ms at batch 8; at S = 32,768 from 2.96 to 2.45 and
@@ -426,20 +426,33 @@ dumps identical) plus the 8B and speculative-decoding checks below:
 - vLLM's `ngram` speculative decoding works with the plugin and does not change any token: each draft row is
   sampled with its own position's seed and step, so a draft is accepted only when it equals the token plain
   decoding produces there. With 4 draft tokens it gives 1.6x to 1.9x at batch 1 and is slower at batch 32
-  (0.4x to 0.9x), so it is off unless the user sets `speculative_config`.
+  (0.4x to 0.9x), and 0.4x to 1.0x at batch 32 and 128 in a later run (2 draft tokens are better than 4 but still
+  not faster than none), so it is off unless the user sets `speculative_config`.
 
-8B throughput, same H800 and settings (T = 0, median of three runs, tok/s):
+8B throughput, one H800 (T = 0, median of five runs alternating between configurations in one session, tok/s):
 
 | Configuration | Batch 1 | Batch 32 | Batch 128 |
 |---|---|---|---|
-| vLLM bf16, CUDA graphs (stock) | 152 | 4,510 | 14,054 |
-| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 50 | 1,751 | 10,635 |
-| integer plugin, Llama-3.1-8B | 152 | 4,025 | 8,250 |
+| vLLM bf16, CUDA graphs (stock) | 152 | 4,526 | 14,097 |
+| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 50 | 1,753 | 10,672 |
+| integer plugin, Llama-3.1-8B, before the two changes below | 153 | 4,028 | 8,266 |
+| integer plugin, Llama-3.1-8B, current | 175 | 4,811 | 9,933 |
 
-At 8B every linear layer uses `torch._int_mm` (the Triton GEMM tile table covers only 1B shapes) and the fused
-kernels are off, so batch 128 trails batch-invariant vLLM.
+Two later changes, verified bit-identical (1B suite hash files byte-equal to the previous commit; 8B equal to the
+`IntLlama` reference in every token and logits hash; 8B batch invariant with graphs and eager), sped up 8B by
+1.14x / 1.19x / 1.20x (also at T = 1) and left 1B unchanged:
 
-Measurements, profiles and scripts are in `experiments/perf/` (`p2_merge/RESULTS.md` and `p3_merge/RESULTS.md`
+- The fused decode kernels take the model dimensions as kernel parameters, so 8B uses them too. Kernels per
+  8B decode step fell from 937 to 388 and elementwise time from 2.54 to 0.75 ms at batch 128.
+- The Triton GEMM tile table now covers the 8B shapes, with cutlass kept where it is faster (the gate/up
+  projection at 256 rows, and the LM head except at 65 to 128 rows). GEMM time per 8B step at batch 128 fell from
+  6.48 to 5.55 ms.
+
+At batch 128 the 8B step takes 11.8 ms (attention 2.6, gate/up GEMM 2.1, other GEMMs 2.7, fused kernels 1.2). The
+plugin is now faster than stock vLLM at batch 1 and 32 and reaches 93% of batch-invariant vLLM at batch 128.
+8B long-context decode at S = 16,384 takes 7.11 ms per step at batch 1 and 19.47 ms at batch 8.
+
+Measurements, profiles and scripts are in `experiments/perf/` (`p2_merge`, `p3_merge` and `p4_merge` RESULTS.md
 for the combined runs).
 
 Long-context decode, one H800, plugin graph replay, S = 16,384 (`tests/vllm/longctx_step.py`, CUDA event median):
