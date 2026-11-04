@@ -23,12 +23,15 @@ from bitexact.llama import HD, HKV, Cache, D, H
 
 class IntLlama:
     """nl: activation limbs per linear input (2: |q| <= 32512). compiled: torch.compile the element-wise
-    segments (same integers)."""
+    segments (same integers); None (default) = on for CUDA, off for CPU. compiled=False is the eager
+    reference: every op a separate PyTorch kernel, same integers."""
 
     FR = FR
 
-    def __init__(self, c, device, nl=2, n_layers=None, compiled=False):
+    def __init__(self, c, device, nl=2, n_layers=None, compiled=None):
         self.dev = torch.device(device)
+        if compiled is None:
+            compiled = self.dev.type == "cuda"
         self.nl = nl
         self.L = c["n_layers"] if n_layers is None else n_layers
         t = lambda k: c[k].to(device)
