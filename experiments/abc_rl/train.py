@@ -1,6 +1,6 @@
 """Minimal GRPO for the A/B/C train/infer arithmetic experiment (Llama-3.2-1B, GSM8K train).
 
-  python train.py --arm {A,A_TIS,B,B_TIS,B_fp32,C} --seed S --steps 200 --out RUN_DIR [--hf HF_DIR --const INT8_CONST --data GSM_DIR]
+  python train.py --arm {A,A_TIS,B,B_TIS,B_fp32,C,D} --seed S --steps 200 --out RUN_DIR [--hf HF_DIR --const INT8_CONST --data GSM_DIR]
 
 Every step: fp32 master -> BitExact int8 constants (intq.quantize) -> the same quantized weights go to the
 integer engine and (dequantized, bf16) to vLLM and the HF trainer. Arms differ only in where the sampler
@@ -9,6 +9,8 @@ log p and the trainer log p values come from:
   A_TIS  sample vLLM bf16, ratio = pi_train / sg(pi_train) (= 1) times w = min(sg(pi_train / pi_vllm), 2)
   B      sample integer engine, ratio = pi_float_train / pi_int_sampler, PPO clip
   B_TIS  B with the A_TIS correction;  B_fp32  B with the trainer forward in fp32 (TF32 off)
+  D      vLLM bf16 with VLLM_BATCH_INVARIANT=1 and TRITON_ATTN; trainer log p values = vLLM's own teacher-forced forward
+         (prompt_logprobs), gradient of HF bf16: logp_hf + sg(logp_vllm - logp_hf)
   C      sample integer engine, trainer log p = logp_float + sg(logp_int_rescored - logp_float), PPO clip
 One optimizer step per RL step (512 rollouts, gradient accumulation over microbatches), token-mean loss,
 group-normalized advantages, no reference KL (beta = 0; the logged KL is sampler vs trainer).
@@ -77,7 +79,7 @@ def evaluate(eng, vs, tok, test, max_new, bs):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arm", choices=["A", "A_TIS", "B", "B_TIS", "B_fp32", "C"], required=True)
+    ap.add_argument("--arm", choices=["A", "A_TIS", "B", "B_TIS", "B_fp32", "C", "D"], required=True)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--steps", type=int, default=200)
     ap.add_argument("--prompts", type=int, default=64)
@@ -93,6 +95,7 @@ def main():
     ap.add_argument("--eval-every", type=int, default=25)
     ap.add_argument("--eval-n", type=int, default=500)
     ap.add_argument("--gpu-mem", type=float, default=0.18)
+    ap.add_argument("--d-attn", default="TRITON_ATTN", help="vLLM attention backend for arm D")
     ap.add_argument("--hf", required=True)
     ap.add_argument("--const", required=True, help="original int8 constants (tables only)")
     ap.add_argument("--data", required=True)
@@ -115,7 +118,8 @@ def main():
     del sd
     c, fw, qst = intq.quantize(P)
     mdir = floatm.write_model_dir(a.hf, fw, os.path.join(a.work, "deq_model"))
-    vs = floatm.VllmSampler(mdir, a.gpu_mem, max_seqs=512)          # before the trainer allocates
+    vs = floatm.VllmSampler(mdir, a.gpu_mem, max_seqs=512, batch_invariant=a.arm == "D",
+                            attn_backend=a.d_attn if a.arm == "D" else None)          # before the trainer allocates
     eng = intq.IntEngine(a.const, c, dev)
     tr = floatm.FloatTrainer(mdir, dev, torch.float32 if a.arm == "B_fp32" else torch.bfloat16)
     torch.backends.cudnn.allow_tf32 = False
@@ -178,6 +182,8 @@ def main():
         ilp = None
         if a.arm == "C":
             ilp = intq.score(eng, [prompts[i] for i in keep], [resps[i] for i in keep], a.score_bs)
+        elif a.arm == "D":
+            ilp = vs.score([prompts[i] for i in keep], [resps[i] for i in keep])
         t["score_int"] = time.time() - t0
 
         # ---- trainer forward / backward ----
@@ -192,7 +198,7 @@ def main():
             sl = torch.tensor([x for i in mb for x in slp[i]], device=dev, dtype=torch.float64)
             A_ = torch.tensor([float(adv[i]) for i in mb for _ in resps[i]], device=dev)
             lpf64 = lpf.detach().double()
-            if a.arm == "C":
+            if a.arm in ("C", "D"):
                 il = torch.tensor([x for i in mb for x in ilp[pos_in_keep[i]]], device=dev, dtype=torch.float64)
                 acc["fi"].append(lpf64 - il)                  # float vs int trainer gap (diagnostic)
                 lp_tr = lpf + (il - lpf64).float().detach()   # value = int log p, gradient of float

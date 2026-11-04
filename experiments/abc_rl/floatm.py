@@ -34,11 +34,21 @@ def write_model_dir(src, fw, out):
 class VllmSampler:
     """In-process vLLM (V1 multiprocessing off) so weights can be loaded into the live model every step."""
 
-    def __init__(self, model_dir, gpu_mem, max_seqs=512):
+    def __init__(self, model_dir, gpu_mem, max_seqs=512, batch_invariant=False, max_batched_tokens=None,
+                 attn_backend=None):
+        """batch_invariant: vLLM's VLLM_BATCH_INVARIANT=1 mode (must be set before vllm is imported; it also
+        patches torch matmul ops process-wide, so the HF trainer then runs on the same batch-invariant GEMMs).
+        attn_backend: e.g. "TRITON_ATTN" (one kernel for prefill and decode; with the default FLASH_ATTN the
+        decode and prefill paths give different logits under batch-invariant mode)."""
         os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+        if batch_invariant:
+            os.environ["VLLM_BATCH_INVARIANT"] = "1"
         from vllm import LLM
+        kw = {"max_num_batched_tokens": max_batched_tokens} if max_batched_tokens else {}
+        if attn_backend:
+            kw["attention_config"] = {"backend": attn_backend}
         self.llm = LLM(model=model_dir, dtype="bfloat16", max_model_len=1024, max_num_seqs=max_seqs,
-                       gpu_memory_utilization=gpu_mem, enable_prefix_caching=True, seed=0)
+                       gpu_memory_utilization=gpu_mem, enable_prefix_caching=True, seed=0, **kw)
 
     def load(self, fw):
         ws = [(k, v.to(torch.bfloat16)) for k, v in fw.items()]
@@ -65,6 +75,24 @@ class VllmSampler:
             texts.append(c.text)
             lps.append(None if greedy else [c.logprobs[i][x].logprob for i, x in enumerate(t)])
         return toks, lps, texts
+
+    def score(self, prompts, resps, chunk=None):
+        """Teacher-forced log p of each response token from vLLM's own forward (prompt_logprobs of
+        prompt + response, one prefill per sequence, max_tokens 1). chunk: submit in generate() calls of
+        this many sequences (batch-composition test)."""
+        from vllm import SamplingParams
+        from vllm.inputs import TokensPrompt
+        sp = SamplingParams(temperature=1.0, max_tokens=1, prompt_logprobs=0, seed=0)
+        n = len(prompts)
+        chunk = chunk or n
+        out = []
+        for i in range(0, n, chunk):
+            ps = [TokensPrompt(prompt_token_ids=p + r) for p, r in zip(prompts[i:i + chunk], resps[i:i + chunk])]
+            for o, p, r in zip(self.llm.generate(ps, [sp] * len(ps), use_tqdm=False), prompts[i:i + chunk],
+                               resps[i:i + chunk]):
+                pl = o.prompt_logprobs
+                out.append([pl[len(p) + j][t].logprob for j, t in enumerate(r)])
+        return out
 
 
 class FloatTrainer:
