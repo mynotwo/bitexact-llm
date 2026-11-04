@@ -38,6 +38,9 @@ def hf_score(a, items):
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     dt = torch.bfloat16 if a.mode == "hf_bf16" else torch.float32
+    if a.repeat_kv:     # long fp32: SDPA with enable_gqa falls back to the O(S^2)-memory math kernel; repeat K/V instead
+        import transformers.integrations.sdpa_attention as sa
+        sa.use_gqa_in_sdpa = lambda *args, **kw: False
     model = AutoModelForCausalLM.from_pretrained(a.model, dtype=dt, attn_implementation="sdpa").cuda().eval()
     out = {}
     for i in range(0, len(items), a.bs):
@@ -102,6 +105,7 @@ def main():
     ap.add_argument("--const")
     ap.add_argument("--data", required=True)
     ap.add_argument("--bs", type=int, default=8)
+    ap.add_argument("--repeat-kv", action="store_true")
     ap.add_argument("--chunk", type=int, default=256)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()

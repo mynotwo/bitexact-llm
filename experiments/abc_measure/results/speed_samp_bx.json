@@ -1,0 +1,77 @@
+{
+ "gpu": "NVIDIA H800",
+ "rows": [
+  {
+   "engine": "bitexact",
+   "gen_len": 256,
+   "batch": 1,
+   "tok_per_s_median": 214.7,
+   "tok_per_s_reps": [
+    137.5,
+    214.8,
+    214.7
+   ],
+   "tokens_per_rep": 256
+  },
+  {
+   "engine": "bitexact",
+   "gen_len": 256,
+   "batch": 8,
+   "tok_per_s_median": 1262.6,
+   "tok_per_s_reps": [
+    1243.1,
+    1264.1,
+    1262.6
+   ],
+   "tokens_per_rep": 2048
+  },
+  {
+   "engine": "bitexact",
+   "gen_len": 256,
+   "batch": 64,
+   "tok_per_s_median": 6499.6,
+   "tok_per_s_reps": [
+    6494.9,
+    6508.4,
+    6499.6
+   ],
+   "tokens_per_rep": 16384
+  },
+  {
+   "engine": "bitexact",
+   "gen_len": 4096,
+   "batch": 1,
+   "tok_per_s_median": 224.1,
+   "tok_per_s_reps": [
+    224.1,
+    224.4,
+    223.6
+   ],
+   "tokens_per_rep": 4096
+  },
+  {
+   "engine": "bitexact",
+   "gen_len": 4096,
+   "batch": 8,
+   "tok_per_s_median": 1093.7,
+   "tok_per_s_reps": [
+    1094.1,
+    1093.7,
+    1091.3
+   ],
+   "tokens_per_rep": 32768
+  },
+  {
+   "engine": "bitexact",
+   "gen_len": 4096,
+   "batch": 64,
+   "tok_per_s_median": 4019.0,
+   "tok_per_s_reps": [
+    4023.2,
+    4009.5,
+    4019.0
+   ],
+   "tokens_per_rep": 262144
+  }
+ ]
+}

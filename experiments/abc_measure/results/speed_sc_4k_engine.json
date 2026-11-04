@@ -1,0 +1,20 @@
+{
+ "gpu": "NVIDIA H800",
+ "rows": [
+  {
+   "mode": "engine",
+   "workload": "long4k",
+   "batch": 4,
+   "seqs": 16,
+   "seq_tokens": 68947,
+   "resp_tokens": 65536,
+   "sec_reps": [
+    19.47,
+    19.41,
+    19.41
+   ],
+   "tok_per_s_median": 3551.5,
+   "resp_tok_per_s_median": 3375.8
+  }
+ ]
+}

@@ -1,0 +1,8 @@
+{
+ "n_quantized_weights": 1235746816,
+ "frac_fp32_exact": 0.7509831585113306,
+ "frac_bf16_exact": 0.014074762544239483,
+ "max_rel_err_fp32_round": 5.960151499898946e-08,
+ "max_abs_dev_from_orig_over_s": 0.5362953731502986,
+ "const_sha": "e669be2a7ad5b4575a521f9516d36fefed79157a25a4efe7f470375d24ec5bb5"
+}
