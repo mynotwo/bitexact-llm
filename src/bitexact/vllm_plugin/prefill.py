@@ -16,7 +16,7 @@ import torch
 from bitexact.vllm_plugin import paged, tri_fuse, tri_paged, tri_prefill
 
 ON = os.environ.get("BITEXACT_PREFILL_FUSE", "1") == "1"
-MIN_TILES = 132            # prefill programs (tiles x KV heads) below which the split-KV attention is used
+MIN_TILES = int(os.environ.get("BITEXACT_PREFILL_MIN_TILES", "132"))   # prefill programs (tiles x KV heads) below which the split-KV attention is used
 
 
 def applies(m, plan, n_tokens):
