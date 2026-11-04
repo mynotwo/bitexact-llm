@@ -76,7 +76,7 @@ LARGE = {
 
 def int_mm(a, w):
     """Exact int32 a @ w.t(); skinny Triton kernel where the table has a faster config, else torch._int_mm."""
-    if a.shape[0] >= LARGE_MIN and (a.is_contiguous() and w.is_contiguous()):
+    if LARGE_MIN <= a.shape[0] and a.shape[0] * w.shape[0] < 1 << 31 and a.is_contiguous() and w.is_contiguous():   # kernel offsets are int32
         for mx, cfg in LARGE.get((w.shape[0], w.shape[1]), ()):
             if a.shape[0] <= mx:
                 return gemm(a, w, cfg)

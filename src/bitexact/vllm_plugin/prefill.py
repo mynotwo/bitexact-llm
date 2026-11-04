@@ -20,12 +20,12 @@ MIN_TILES = int(os.environ.get("BITEXACT_PREFILL_MIN_TILES", "132"))   # prefill
 
 
 def applies(m, plan, n_tokens):
-    """The fused forward needs tri_fuse's conditions and int32-safe offsets in its kernels (rows x columns of the
-    widest GEMM output)."""
+    """The fused forward needs tri_fuse's conditions and int32-safe offsets in its kernels (tokens x columns of the
+    widest GEMM output: they address the limb-1 half of the GEMM output as M * N)."""
     if not (ON and plan is not None and plan.pre and m.nl == 2 and m.dev.type == "cuda" and not m.post_check
             and paged.TRI_MLP and m.D & (m.D - 1) == 0 and m.H * m.HD == m.D):
         return False
-    return 2 * n_tokens * max(m.layers[0]["wgu"][0].shape[0], m.layers[0]["wqkv"][0].shape[0]) < 1 << 31
+    return n_tokens * max(m.layers[0]["wgu"][0].shape[0], m.layers[0]["wqkv"][0].shape[0]) < 1 << 31
 
 
 def _prefill_attn(m, i, q, pos, c, plan, tiles, num, den):
