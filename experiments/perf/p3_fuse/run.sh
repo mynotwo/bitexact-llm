@@ -87,6 +87,12 @@ unit() { D=$O/unit; mkdir -p $D
   run $D/unit.log 3600 repo env BITEXACT_INT8_CONST=$CONST $PY -m pytest -q -x tests/test_tri_fuse.py tests/vllm/test_decode_paths.py
   tail -30 $D/unit.log | tee -a $SUM; }
 
+redo() { D=$O/suite   # two base suite jobs that died in vLLM's memory profiling (another job on the GPU)
+  R="$PY tests/vllm/run_serve.py --model $MODEL"
+  run $D/base_busy_pc1_s2_b64.log 2400 base $R --mode busy --prefix-cache 1 --arrival-seed 2 --budget 64 --out $D/base_busy_pc1_s2_b64
+  run $D/base_busy_eager_s4.log 2400 base env BITEXACT_GRAPHS=0 BITEXACT_COMPILE=0 $R --mode busy --prefix-cache 1 --arrival-seed 4 --max-seqs 128 --out $D/base_busy_eager_s4
+  for j in busy_pc1_s2_b64 busy_eager_s4; do hcmp $D/repo_$j $D/base_$j; done; }
+
 suite() { D=$O/suite; mkdir -p $D
   for t in base repo; do
     wait_gpu || return 1
