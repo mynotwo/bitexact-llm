@@ -11,6 +11,7 @@ log p and the trainer log p values come from:
   B_TIS  B with the A_TIS correction;  B_fp32  B with the trainer forward in fp32 (TF32 off)
   D      vLLM bf16 with VLLM_BATCH_INVARIANT=1 and TRITON_ATTN; trainer log p values = vLLM's own teacher-forced forward
          (prompt_logprobs), gradient of HF bf16: logp_hf + sg(logp_vllm - logp_hf)
+  C_plugin  C with the sampler and the rescoring run in the BitExact vLLM plugin (plug.py)
   C      sample integer engine, trainer log p = logp_float + sg(logp_int_rescored - logp_float), PPO clip
 One optimizer step per RL step (512 rollouts, gradient accumulation over microbatches), token-mean loss,
 group-normalized advantages, no reference KL (beta = 0; the logged KL is sampler vs trainer).
@@ -32,6 +33,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "rl_mismatch"))
 import common  # noqa: E402
 import floatm  # noqa: E402
 import intq  # noqa: E402
+import plug  # noqa: E402
 
 
 def train_prompts(data, tok):
@@ -62,10 +64,16 @@ def stats(x):
             "p99_abs": float(a.float().quantile(0.99)) if a.numel() < 16_000_000 else None}
 
 
-def evaluate(eng, vs, tok, test, max_new, bs):
+def evaluate(eng, vs, tok, test, max_new, bs, pe=None):
     prompts = [p for p, _ in test]
     res = {}
     t0 = time.time()
+    if pe is not None:                                  # C_plugin: integer greedy through the plugin, no float eval
+        it, _ = pe.generate(prompts, [0] * len(prompts), max_new, greedy=True)
+        texts = tok.batch_decode([[x for x in t if x != intq.EOS] for t in it])
+        res["int_acc"] = sum(common.grade(t, g)[0] for t, (_, g) in zip(texts, test)) / len(test)
+        res["int_sec"] = time.time() - t0
+        return res
     it, _ = intq.generate(eng, prompts, [0] * len(prompts), max_new, greedy=True, bs=bs)
     texts = tok.batch_decode([[x for x in t if x != intq.EOS] for t in it])
     res["int_acc"] = sum(common.grade(t, g)[0] for t, (_, g) in zip(texts, test)) / len(test)
@@ -79,7 +87,7 @@ def evaluate(eng, vs, tok, test, max_new, bs):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arm", choices=["A", "A_TIS", "B", "B_TIS", "B_fp32", "C", "D"], required=True)
+    ap.add_argument("--arm", choices=["A", "A_TIS", "B", "B_TIS", "B_fp32", "C", "C_plugin", "D"], required=True)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--steps", type=int, default=200)
     ap.add_argument("--prompts", type=int, default=64)
@@ -118,16 +126,20 @@ def main():
     del sd
     c, fw, qst = intq.quantize(P)
     mdir = floatm.write_model_dir(a.hf, fw, os.path.join(a.work, "deq_model"))
-    vs = floatm.VllmSampler(mdir, a.gpu_mem, max_seqs=512, batch_invariant=a.arm == "D",
-                            attn_backend=a.d_attn if a.arm == "D" else None)          # before the trainer allocates
-    eng = intq.IntEngine(a.const, c, dev)
+    pe = eng = vs = None
+    if a.arm == "C_plugin":
+        pe = plug.PlugEngine(a.hf, a.const, a.work, a.gpu_mem)                       # before the trainer allocates
+    else:
+        vs = floatm.VllmSampler(mdir, a.gpu_mem, max_seqs=512, batch_invariant=a.arm == "D",
+                                attn_backend=a.d_attn if a.arm == "D" else None)
+        eng = intq.IntEngine(a.const, c, dev)
     tr = floatm.FloatTrainer(mdir, dev, torch.float32 if a.arm == "B_fp32" else torch.bfloat16)
     torch.backends.cudnn.allow_tf32 = False
     opt = torch.optim.AdamW(list(P.values()), lr=a.lr, betas=(0.9, 0.999), weight_decay=0.0, eps=1e-8)
     log = open(os.path.join(a.out, "steps.jsonl"), "a")
     evlog = open(os.path.join(a.out, "eval.jsonl"), "a")
     gen = batches(len(train), a.prompts, a.seed)
-    int_sample = a.arm in ("B", "B_TIS", "B_fp32", "C")
+    int_sample = a.arm in ("B", "B_TIS", "B_fp32", "C", "C_plugin")
     print(f"start arm {a.arm} seed {a.seed} mem {torch.cuda.memory_allocated() / 2**30:.1f}G", flush=True)
 
     for step in range(a.steps + 1):
@@ -135,15 +147,16 @@ def main():
         t0 = time.time()
         if step > 0:
             c, fw, qst = intq.quantize(P)
-        changed = eng.load(c)
-        vs.load(fw)
+        changed = pe.load(c) if pe is not None else eng.load(c)
+        if vs is not None:
+            vs.load(fw)
         tr.set_weights(fw)
         torch.cuda.synchronize()
         t["quantize"] = time.time() - t0
         bound_err = None
         if step % a.eval_every == 0 or step == a.steps:
             try:
-                ev = evaluate(eng, vs, tok, test, a.max_new, a.gen_bs)
+                ev = evaluate(eng, vs, tok, test, a.max_new, a.gen_bs, pe)
             except OverflowError as e:
                 ev, bound_err = {"error": str(e)}, str(e)
             ev["step"] = step
@@ -160,7 +173,10 @@ def main():
         golds = [train[i][1] for i in pidx for _ in range(a.G)]
         seeds = [1 + (a.seed * 1000 + step) * 10000 + j for j in range(len(prompts))]
         try:
-            if int_sample:
+            if pe is not None:
+                resps, slp = pe.generate(prompts, seeds, a.max_new)
+                texts = tok.batch_decode([[x for x in r if x != intq.EOS] for r in resps])
+            elif int_sample:
                 resps, slp = intq.generate(eng, prompts, seeds, a.max_new, bs=a.gen_bs)
                 texts = tok.batch_decode([[x for x in r if x != intq.EOS] for r in resps])
             else:
@@ -180,7 +196,9 @@ def main():
         # ---- integer rescoring (C) ----
         t0 = time.time()
         ilp = None
-        if a.arm == "C":
+        if a.arm == "C_plugin":
+            ilp = pe.score([prompts[i] for i in keep], [resps[i] for i in keep])
+        elif a.arm == "C":
             ilp = intq.score(eng, [prompts[i] for i in keep], [resps[i] for i in keep], a.score_bs)
         elif a.arm == "D":
             ilp = vs.score([prompts[i] for i in keep], [resps[i] for i in keep])
@@ -198,7 +216,7 @@ def main():
             sl = torch.tensor([x for i in mb for x in slp[i]], device=dev, dtype=torch.float64)
             A_ = torch.tensor([float(adv[i]) for i in mb for _ in resps[i]], device=dev)
             lpf64 = lpf.detach().double()
-            if a.arm in ("C", "D"):
+            if a.arm in ("C", "C_plugin", "D"):
                 il = torch.tensor([x for i in mb for x in ilp[pos_in_keep[i]]], device=dev, dtype=torch.float64)
                 acc["fi"].append(lpf64 - il)                  # float vs int trainer gap (diagnostic)
                 lp_tr = lpf + (il - lpf64).float().detach()   # value = int log p, gradient of float
@@ -248,6 +266,8 @@ def main():
             rec["float_vs_int_trainer"] = stats(torch.cat(acc["fi"]))
         log.write(json.dumps(rec) + "\n")
         log.flush()
+        if os.environ.get("ABC_DUMP"):                   # exact rollouts / log p for the identity checks
+            torch.save({"resps": resps, "slp": slp, "ilp": ilp, "keep": keep}, os.path.join(a.out, f"dump{step}.pt"))
         print(f"step {step} R {rec['reward']:.4f} |d| {rec['delta']['mean_abs']:.2e} clip {rec['clip_frac']:.4f} "
               f"gn {gnorm:.3f} chg {changed:.2e} t " + " ".join(f"{k}={v:.1f}" for k, v in t.items()), flush=True)
         if step == 0:
