@@ -36,7 +36,7 @@ C-final run: seed 1, 30 steps, flags of `runs/C_new_v2_s1` (`--int-impl new --pl
 | arm | s/step | sample | score | train (fwd + bwd) | quantize + optim |
 |---|---|---|---|---|---|
 | C-old | 30.9 | | | | |
-| C-new v2 | 17.9 | 6.66 | 5.64 | 5.39 | 0.23 | |
+| C-new v2 | 17.9 | 6.66 | 5.64 | 5.39 | 0.23 |
 | **C-final** | **16.2** | **5.83** | **4.87** | **5.24** | **0.23** |
 | D | 11.7 | | | | |
 
