@@ -29,7 +29,7 @@ B="$PY $X/scorer_bench.py --const $CONST --model $DEQ --data $DATA"
 r() { "$@" 2>&1 | grep '^{' | tee -a $J || true; }
 case $MODE in
 pytest) CUDA_VISIBLE_DEVICES=$1 PYTHONPATH=$PYTHONPATH:$HOME/speed_decode/pytest_pkg $PY -m pytest -q -p no:cacheprovider tests > $O/${TAG}_pytest.log 2>&1; tail -n 2 $O/${TAG}_pytest.log ;;
-suite) GPUS="$1" PY=$PY MODEL=$INT CONST=$CONST OUT=$O/suite_$TAG bash tests/vllm/run_tests.sh $TAG > $O/${TAG}_suite.log 2>&1
+suite) GPUS="$*" PY="$PY $X/inproc.py" MODEL=$INT CONST=$CONST OUT=$O/suite_$TAG bash tests/vllm/run_tests.sh $TAG > $O/${TAG}_suite.log 2>&1
   grep -h "compare_exit\|compare_long_exit\|token_seqs_diff\|Traceback" $O/${TAG}_suite.log | head -40 ;;
 scheck) export CUDA_VISIBLE_DEVICES=$1; J=$O/$TAG.scheck.jsonl; : > $J; M="--mode ${SMODE:-packed}"
   for b in 8 64 1; do r $B --rollout $GSM --nseq 128 --bs $b --check --ref $REF/ref_gsm.pt --tag $TAG-gsm-b$b $M; done
@@ -49,6 +49,6 @@ dspeed) export CUDA_VISIBLE_DEVICES=$1
     grep -h SPEED $O/${TAG}_speed_B$b.log; done ;;
 bench) export CUDA_VISIBLE_DEVICES=$1; J=$O/${TAG}_bench.log; : > $J
   for rep in 1 2 3; do for b in 1 32 128; do for t in 0 1; do
-    timeout 3000 $PY tests/vllm/bench.py --model $INT --batch $b --temp $t --tag $TAG-r$rep 2>&1 | grep '^RESULT' | tee -a $J
+    timeout 3000 $PY $X/inproc.py tests/vllm/bench.py --model $INT --batch $b --temp $t --tag $TAG-r$rep 2>&1 | grep '^RESULT' | tee -a $J
   done; done; done ;;
 esac
