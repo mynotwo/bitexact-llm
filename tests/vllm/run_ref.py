@@ -30,7 +30,6 @@ def main():
     from bitexact.int8.consts import FR
     from bitexact.int8.model import IntLlama
     from bitexact.intops import first_argmax
-    from bitexact.llama import Cache
     from bitexact.sampling import temp_ratio
 
     c = torch.load(a.const, map_location="cpu", weights_only=False)
@@ -44,7 +43,7 @@ def main():
             tn, td = temp_ratio(w["temp"])
             ids = list(w["ids"])
             P = len(ids)
-            cache = Cache(m.L, 1, P + w["max_new"], m.dev)
+            cache = m.new_cache(1, P + w["max_new"])
             for c0 in range(0, P, PCHUNK):        # a12 prefill in chunks (exact in any split)
                 c1 = min(P, c0 + PCHUNK)
                 x = torch.tensor([ids[c0:c1]], device=m.dev)

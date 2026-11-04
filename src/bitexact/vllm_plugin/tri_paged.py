@@ -31,10 +31,10 @@ import triton
 import triton.language as tl
 
 from bitexact.int8.consts import EXP_MIN, FA, FE
-from bitexact.int8.segs import FP, FQ
-from bitexact.llama import HD, HKV
+from bitexact.int8.segs import FP, FQ, ZCLAMP, score_rule
 
 NEG = tl.constexpr(-(1 << 62))
+ZCLAMP_C = tl.constexpr(ZCLAMP)
 
 
 @triton.jit
@@ -87,6 +87,15 @@ def _load_v(cbase, off, kok, rd, DH: tl.constexpr):
 @triton.jit
 def _rsh(x, s: tl.constexpr):
     return (x + (1 << (s - 1))) >> s
+
+
+@triton.jit
+def _zscale(d, ZSH: tl.constexpr, ZMUL: tl.constexpr):
+    """z = int8.segs.softmax's score scale of d <= 0: rsh(d, ZSH), or (head_dim 128, ZMUL != 0) rsh(max(d, ZCLAMP) * ZMUL,
+    ZSH); the clamp keeps |d * ZMUL| < 2^62 and sends only values far below the exp table (z < -32) to z < -32."""
+    if ZMUL == 0:
+        return _rsh(d, ZSH)
+    return _rsh(tl.maximum(d, ZCLAMP_C) * ZMUL, ZSH)
 
 
 @triton.jit
@@ -143,7 +152,7 @@ def _max_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, mx_ptr, M, NSPLIT,
 @triton.jit
 def _acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, den_ptr, M, NSPLIT,
                 sqz, sqm, spz, sc_nb, sc_h, sc_bs, sbt, snz, snm,
-                BS: tl.constexpr, NHKV: tl.constexpr, DH: tl.constexpr, ZSH: tl.constexpr,
+                BS: tl.constexpr, NHKV: tl.constexpr, DH: tl.constexpr, ZSH: tl.constexpr, ZMUL: tl.constexpr,
                 ZLO: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr):
     pz, h, rm, rd, mok, qpos, a0, a1, a2, lo, hi, bt_ptr = _tile(
         q_ptr, qpos_ptr, bt_ptr, M, sqz, sqm, spz, sbt, NSPLIT, NHKV, DH, BM, BN)
@@ -159,7 +168,7 @@ def _acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, den_p
     den = tl.zeros((BM,), dtype=tl.int64)
     for k0 in tl.range(lo, hi, BN, num_stages=1):
         raw, valid, off, kok = _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, DH, BN)
-        z = _rsh(tl.where(valid, raw, NEG) - mx[:, None], ZSH)          # <= 0
+        z = _zscale(tl.where(valid, raw, NEG) - mx[:, None], ZSH, ZMUL)   # <= 0
         idx = (tl.maximum(z, ZLO - 1) - ZLO).to(tl.int32)               # table index, -1 = below table
         ok = valid & (idx >= 0)
         p = tl.load(ptab_ptr + tl.maximum(idx, 0), mask=ok, other=0)    # int32, = rsh(exp, FE - FP)
@@ -257,7 +266,7 @@ def _dec_max_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, mx_ptr, M, NSPLIT,
 @triton.jit
 def _dec_acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, den_ptr, M, NSPLIT,
                     sqz, sqm, spz, sc_nb, sc_h, sc_bs, sbt, snz, snm,
-                    BS: tl.constexpr, NHKV: tl.constexpr, DH: tl.constexpr, ZSH: tl.constexpr,
+                    BS: tl.constexpr, NHKV: tl.constexpr, DH: tl.constexpr, ZSH: tl.constexpr, ZMUL: tl.constexpr,
                     ZLO: tl.constexpr, BQ: tl.constexpr, BN: tl.constexpr, FUSED: tl.constexpr):
     """FUSED (NSPLIT == 1): this program sees all keys of its rows, so it takes the row maxima itself in a
     first sweep (the second sweep re-reads K, mostly from L2) and stores num / den; otherwise mx comes from
@@ -278,7 +287,7 @@ def _dec_acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, d
     den = tl.zeros((BQ,), dtype=tl.int64)
     for k0 in tl.range(lo, hi, BN, num_stages=1):
         raw, valid, off, kok = _dec_scores(qs, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, DH, BQ, BN)
-        z = _rsh(tl.where(valid, raw, NEG) - mx[:, None], ZSH)          # <= 0
+        z = _zscale(tl.where(valid, raw, NEG) - mx[:, None], ZSH, ZMUL)   # <= 0
         idx = (tl.maximum(z, ZLO - 1) - ZLO).to(tl.int32)               # table index, -1 = below table
         ok = valid & (idx >= 0)
         p = tl.load(ptab_ptr + tl.maximum(idx, 0), mask=ok, other=0)    # int32, = rsh(exp, FE - FP)
@@ -320,14 +329,15 @@ def _store_kernel(c_ptr, slot_ptr, k_ptr, v_ptr, skz, skh, svz, svh, sc_nb, sc_h
 def store(c, slot, k, v):
     """Write K / V (int64 [N, HKV, HD], |.| within 3 limbs) of the tokens at cache slots slot [N] into the
     limb-plane cache c (int8 [nb, HKV, bs, 512]); slot < 0 is skipped."""
-    N = slot.shape[0]
+    N, hkv, hd = k.shape
     if N:
-        _store_kernel[(N, HKV)](c, slot, k, v, k.stride(0), k.stride(1), v.stride(0), v.stride(1),
-                                c.stride(0), c.stride(1), c.stride(2), BS=c.shape[2], DH=HD, num_warps=1)
+        _store_kernel[(N, hkv)](c, slot, k, v, k.stride(0), k.stride(1), v.stride(0), v.stride(1),
+                                c.stride(0), c.stride(1), c.stride(2), BS=c.shape[2], DH=hd, num_warps=1)
 
 
 def to_limbs(c):
     """int32 cache [nb, HKV, bs, 2 HD] (K | V) -> the int8 limb-plane layout (reference / tests)."""
+    HD = c.shape[-1] // 2
     out = torch.zeros(*c.shape[:3], 8 * HD, dtype=torch.int8, device=c.device)
     for part, o in ((c[..., :HD], 0), (c[..., HD:], 3)):
         r = part.clone()
@@ -346,6 +356,7 @@ def weight_table(lut):
     return t.to(torch.int32).contiguous()
 
 
+DEC_PROGRAMS = 528     # decode programs to aim for (4 per SM on H100 / H800)
 SM_TARGET = 264        # programs to aim for (2 per SM on H100 / H800)
 
 
@@ -361,11 +372,13 @@ def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=None, warps=4):
     maximum, per-split num / den added with int64 atomic adds. Max and integer sums are exact in any
     order, so the result does not depend on nsplit or on scheduling."""
     R, nh, M, dh = q.shape
-    assert nh == HKV and dh == HD and cache.stride(3) == 1 and bt.shape[1] * cache.shape[2] < 43690
+    zmul, zsh = score_rule(dh)
+    HKV, HD = nh, dh
+    assert cache.shape[1] == nh and cache.shape[3] == 8 * dh and cache.stride(3) == 1 and bt.shape[1] * cache.shape[2] < 43690
     q = q.contiguous()
     qpos = qpos.contiguous()
     if M <= DEC_BQ and bm is None:
-        return _attend_dec(q, qpos, cache, bt, ptab, nsplit, bn or (64 if R >= 64 else 128), warps)   # 64: less masked tile at short contexts
+        return _attend_dec(q, qpos, cache, bt, ptab, nsplit, bn or 64, warps)  # 64 beats 128 at every R once contexts are long (p3_splitkv sweep)
     BM = bm or (16 if M <= 16 else 64)
     bn = bn or 64
     tiles = triton.cdiv(M, BM) * R * HKV
@@ -380,7 +393,7 @@ def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=None, warps=4):
     _max_kernel[grid](q, qpos, cache, bt, mx, M, nsplit, *common,
                       BS=cache.shape[2], NHKV=HKV, DH=HD, BM=BM, BN=bn, num_warps=warps)
     _acc_kernel[grid](q, qpos, cache, bt, ptab, mx, num, den, M, nsplit, *common, num.stride(1),
-                      num.stride(2), BS=cache.shape[2], NHKV=HKV, DH=HD, ZSH=2 * FQ + 3 - FA,
+                      num.stride(2), BS=cache.shape[2], NHKV=HKV, DH=HD, ZSH=zsh, ZMUL=zmul or 0,
                       ZLO=EXP_MIN << FA, BM=BM, BN=bn, num_warps=warps)
     return num, den
 
@@ -393,10 +406,13 @@ def _attend_dec(q, qpos, cache, bt, ptab, nsplit, bn, warps):
     split a single kernel takes the maxima and the sums and stores them (no maxima pass, no atomics, no
     zero fills); it is used once there are at least SM_TARGET / 2 programs (32 or more requests). Otherwise
     nsplit = SM_TARGET // programs, so the splits fit in one wave."""
-    R, _, M, _ = q.shape
+    R, HKV, M, HD = q.shape
+    zmul, zsh = score_rule(HD)
     if nsplit is None:
         tiles = R * HKV
-        nsplit = 1 if 2 * tiles >= SM_TARGET else min(64, SM_TARGET // tiles)
+        # R <= 8: as before but 4 programs per SM (base 2); R > 8: split only with >= 2048 table keys per split
+        # (a split costs ~30 us: 3 launches + zero fills, and the table is as wide as max_model_len, not the real context)
+        nsplit = max(1, min(64, DEC_PROGRAMS // tiles, (bt.shape[1] * cache.shape[2] // 2048) if R > 8 else 64))
     fused = nsplit == 1
     new = torch.empty if fused else torch.zeros
     num = new(R, HKV, M, HD, dtype=torch.long, device=q.device)
@@ -409,6 +425,6 @@ def _attend_dec(q, qpos, cache, bt, ptab, nsplit, bn, warps):
         _dec_max_kernel[grid](q, qpos, cache, bt, mx, M, nsplit, *common,
                               BS=cache.shape[2], NHKV=HKV, DH=HD, BQ=DEC_BQ, BN=bn, num_warps=warps)
     _dec_acc_kernel[grid](q, qpos, cache, bt, ptab, mx, num, den, M, nsplit, *common, num.stride(1),
-                          num.stride(2), BS=cache.shape[2], NHKV=HKV, DH=HD, ZSH=2 * FQ + 3 - FA,
+                          num.stride(2), BS=cache.shape[2], NHKV=HKV, DH=HD, ZSH=zsh, ZMUL=zmul or 0,
                           ZLO=EXP_MIN << FA, BQ=DEC_BQ, BN=bn, FUSED=fused, num_warps=warps)
     return num, den

@@ -83,6 +83,8 @@ class BitExactLlamaForCausalLM(nn.Module):
         self.use_graphs = bool(int(os.environ.get("BITEXACT_GRAPHS", "1"))) and \
             vllm_config.model_config.enforce_eager
         self.max_len = vllm_config.model_config.max_model_len
+        sc = vllm_config.speculative_config
+        self.spec_q = 1 + (sc.num_speculative_tokens if sc is not None else 0)    # query tokens per request
         self.graphs = None
         self.sha = c["sha256"]
         log = os.environ.get("BITEXACT_HASH_LOG")
@@ -90,12 +92,19 @@ class BitExactLlamaForCausalLM(nn.Module):
         # host copy of the bound-violation flag, read as each step's output reaches the host (_check_on_output)
         self.flag = torch.zeros((), dtype=torch.bool, device="cpu", pin_memory=torch.cuda.is_available())
         del c
-        # Attention layers only to get vLLM's KV cache: 8 KV heads x 128 bf16 = 8 x 64 int32 (K | V).
+        # Attention layers only to get vLLM's KV cache: HKV heads x 2 HD bf16 per token (= K | V as 2 HD int32,
+        # 8 HD bytes: 3 int8 limb planes each, tri_paged.py).
+        m = self.m
+        self.qdim = m.H * m.HD
         self.attn = nn.ModuleList([
-            Attention(num_heads=8, head_size=128, scale=1.0, num_kv_heads=8,
+            Attention(num_heads=m.HKV, head_size=2 * m.HD, scale=1.0, num_kv_heads=m.HKV,
                       cache_config=vllm_config.cache_config, prefix=f"model.layers.{i}.self_attn.attn")
             for i in range(self.m.L)])
         self.layer0 = "model.layers.0.self_attn.attn"
+        if os.environ.get("BITEXACT_COMPILE", "1") == "1":
+            # Inductor initialises its pattern tables on the first compile (host-to-device copies); do it now,
+            # never inside a CUDA graph capture (speculative decoding reaches the first compile there).
+            torch.compile(lambda t: t * 2 + 1)(torch.zeros(8, dtype=torch.long, device=dev))
         STASH.active = True
         MODEL = self
         _check_on_output()
@@ -120,8 +129,14 @@ class BitExactLlamaForCausalLM(nn.Module):
         from bitexact.vllm_plugin.graph import decode_forward
         N = input_ids.shape[0]
         bt = meta.block_table
-        if bt.shape[0] != N:
-            bt = bt[torch.arange(N, device=bt.device).clamp(max=bt.shape[0] - 1)]
+        R = bt.shape[0]
+        if R != N and self.spec_q > 1:
+            # speculative decoding: uniform q = N / R query tokens per request (verify rows), each row attends
+            # with its own position (causal) through its request's block table
+            q = self.spec_q
+            bt = bt[(torch.arange(N, device=bt.device) // q).clamp(max=R - 1)]
+        elif R != N:
+            bt = bt[torch.arange(N, device=bt.device).clamp(max=R - 1)]
         return decode_forward(self.m, [a.kv_cache for a in self.attn], input_ids, positions,
                               meta.slot_mapping[:N], bt)
 
@@ -131,11 +146,12 @@ class BitExactLlamaForCausalLM(nn.Module):
             return self._captured_decode(input_ids, positions, meta)
         x = self.embed_input_ids(input_ids) if inputs_embeds is None else inputs_embeds.long()
         N = x.shape[0]
-        plan = None if meta is None else paged.make_plan(meta, N, positions)
+        plan = None if meta is None else paged.make_plan(meta, N, positions, self.qdim)
         if plan is not None and self.plan_log:
             self._log_plan(plan)
-        if plan is not None and not self.use_graphs and not plan.pre and plan.n == N \
-                and plan.dec_req.numel() == N:
+        if plan is not None and not self.use_graphs and plan.n == N and (
+                (not plan.pre and plan.dec_req.numel() == N) or
+                (self.spec_q > 1 and not plan.dec_req.numel() and all(ql == self.spec_q for _, _, ql, _ in plan.pre))):
             # Uniform decode with vLLM's graphs on: the device-only path vLLM captures. vLLM's warm-up run
             # calls it right before each capture, so the kernels are compiled and loaded outside the capture.
             return self._captured_decode(input_ids, positions, meta)

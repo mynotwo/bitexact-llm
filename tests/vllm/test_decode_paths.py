@@ -50,7 +50,7 @@ def _run(use_graph):
     # integer reference: bitexact.int8 on its own cache
     refs = []
     for p in prompts:
-        c = Cache(m.L, 1, len(p) + steps, dev)
+        c = m.new_cache(1, len(p) + steps)
         refs.append((c, m.forward(torch.tensor([p], device=dev), torch.arange(len(p), device=dev)[None], c)[:, -1]))
     li = m.logits(last)
     tok = torch.zeros(R, dtype=torch.long, device=dev)

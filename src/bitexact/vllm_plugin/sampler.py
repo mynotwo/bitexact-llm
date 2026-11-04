@@ -26,6 +26,7 @@ host t against vLLM's device positions (a sync, test runs only).
 import hashlib
 import os
 
+import numpy as np
 import torch
 from vllm.v1.worker.gpu.sample.logits_processor import LogitsProcessor
 
@@ -109,11 +110,12 @@ class IntSampler(LogitsProcessor):
     def __init__(self, vllm_config, req_states):
         self.rs = req_states
         n = req_states.max_num_reqs
-        self.seed = [0] * n
-        self.temp = [(0, 1)] * n
+        self.seed = np.zeros(n, dtype=np.int64)         # per request slot
+        self.tn = np.zeros(n, dtype=np.int64)           # temperature T = tn / td (tn = 0: greedy)
+        self.td = np.ones(n, dtype=np.int64)
         self.lnt = None
         self.log = os.environ.get("BITEXACT_HASH_LOG")
-        self.strict = [False] * n
+        self.strict = np.zeros(n, dtype=bool)
         self.active = None
         STASH.sampler = self
 
@@ -121,9 +123,9 @@ class IntSampler(LogitsProcessor):
         if not STASH.active:
             return False
         self.seed[req_idx] = int(sampling_params.seed or 0)
-        self.temp[req_idx] = temp_ratio(sampling_params.temperature)
+        self.tn[req_idx], self.td[req_idx] = temp_ratio(sampling_params.temperature)
         self.strict[req_idx] = bool(_strict(sampling_params) or self.log)
-        return self.strict[req_idx] or self.temp[req_idx][0] != 0
+        return bool(self.strict[req_idx] or self.tn[req_idx] != 0)
 
     def any_noisy(self):
         """Does a running request sample with temperature? (then the noisy kernel covers all rows)."""
@@ -131,7 +133,7 @@ class IntSampler(LogitsProcessor):
             self.active = _request_state(self.rs)
         if self.active is False:
             return True
-        return any(self.temp[s][0] != 0 for s in self.active.req_id_to_index.values())
+        return bool(self.tn[self._running()].any())
 
     def any_strict(self):
         """Does a running request need the real float logits? Host only. vLLM's warm-up requests (every feature on)
@@ -140,8 +142,12 @@ class IntSampler(LogitsProcessor):
         if self.active is None:
             self.active = _request_state(self.rs)
         if self.active is False:
-            return any(self.strict)
-        return any(self.strict[s] for s in self.active.req_id_to_index.values())
+            return bool(self.strict.any())
+        return bool(self.strict[self._running()].any())
+
+    def _running(self):
+        d = self.active.req_id_to_index
+        return np.fromiter(d.values(), dtype=np.intp, count=len(d))
 
     def apply(self, logits, ctx):
         if not STASH.active:
@@ -153,29 +159,42 @@ class IntSampler(LogitsProcessor):
         if self.lnt is None:
             from bitexact.vllm_plugin.model import MODEL
             self.lnt = MODEL.m.ln
-        slots = ctx.idx_mapping_np                       # one logits row per request (no spec decoding)
-        assert len(slots) == n, "logits rows != requests (speculative decoding is not supported)"
+        slots = ctx.idx_mapping_np
         plen = self.rs.prompt_len.np
-        ts = [int(ctx.seq_lens_upper_bound_np[r]) - int(plen[s]) for r, s in enumerate(slots)]
-        seeds = [self.seed[s] for s in slots]
-        temps = [self.temp[s] for s in slots]
+        if len(slots) == n:                              # one logits row per request
+            rows = slots
+            ts = ctx.seq_lens_upper_bound_np[:n].astype(np.int64) - plen[slots].astype(np.int64)
+        else:
+            # Speculative decoding: a request owns 1 + k rows (its last token and k drafts). The host does not
+            # know how many drafts were accepted last step, so the generated index of each row comes from the
+            # device positions (row at position p samples the token at p + 1), one sync per step. Row j of a
+            # request is sampled exactly as plain decoding samples that position (same seed, same t), so a draft
+            # is accepted iff it equals the token plain decoding would have produced there.
+            rows = ctx.expanded_idx_mapping.cpu().numpy().astype(np.intp)
+            ts = ctx.pos.cpu().numpy().astype(np.int64) + 1 - plen[rows].astype(np.int64)
+        seeds = self.seed[rows]
+        tn, td = self.tn[rows], self.td[rows]
+        wide = bool(seeds.max(initial=0) >= 1 << 32 or ts.max(initial=0) >= 1 << 32)   # GPU seeding needs < 2^32
+        if head is None or wide:
+            temps = list(zip(tn.tolist(), td.tolist()))
+            keys = list(zip(seeds.tolist(), np.maximum(ts, 0).tolist()))
         if head is None:
-            y = integer_sample(li, seeds, ts, temps, self.lnt, STASH.greedy)
-        else:                                            # one pass over the GEMM output; rows with tn = 0 are greedy
-            y = tri_sample.noisy(head, tri_sample.row_state([(seeds[r], max(ts[r], 0)) for r in range(n)], temps),
-                                 self.lnt)
+            y = integer_sample(li, seeds.tolist(), ts.tolist(), temps, self.lnt, STASH.greedy)
+        else:       # one pass over the GEMM output (rows with tn = 0 are greedy) that also writes vLLM's logits
+            assert logits.is_contiguous()
+            st = tri_sample.row_state(keys, temps) if wide else np.stack([seeds, np.maximum(ts, 0), tn, td], 1)
+            y = tri_sample.noisy(head, st, self.lnt, out=logits)
         if self.log:
             li = head.logits() if li is None else li
             pos = ctx.pos.tolist()
-            assert ctx.expanded_idx_mapping.tolist() == slots.tolist(), "host slots != device slots"
-            assert ts == [pos[r] + 1 - int(plen[s]) for r, s in enumerate(slots)], "host t != device t"
-            self._log(li, seeds, ts, y)
-        if head is None or STASH.strict or STASH.greedy is None:
+            if len(slots) == n:
+                assert ctx.expanded_idx_mapping.tolist() == slots.tolist(), "host slots != device slots"
+                assert ts.tolist() == [pos[r] + 1 - int(plen[s]) for r, s in enumerate(slots)], "host t != device t"
+            self._log(li, seeds.tolist(), ts.tolist(), y)
+        if head is None:
             logits.fill_(float("-inf"))
-        else:                                            # compute_logits left one-hot rows at the greedy token
-            logits.scatter_(1, STASH.greedy[:, None], float("-inf"))
-        logits.scatter_(1, y[:, None], 0.0)
-        return logits
+            logits.scatter_(1, y[:, None], 0.0)
+        return logits                                    # head path: noisy() left -inf rows with 0 at the token
 
     def _log(self, li, seeds, ts, y):
         rows = li.cpu().numpy()
