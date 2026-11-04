@@ -90,9 +90,12 @@ class BitExactLlamaForCausalLM(nn.Module):
         # host copy of the bound-violation flag, read as each step's output reaches the host (_check_on_output)
         self.flag = torch.zeros((), dtype=torch.bool, device="cpu", pin_memory=torch.cuda.is_available())
         del c
-        # Attention layers only to get vLLM's KV cache: 8 KV heads x 128 bf16 = 8 x 64 int32 (K | V).
+        # Attention layers only to get vLLM's KV cache: HKV heads x 2 HD bf16 per token (= K | V as 2 HD int32,
+        # 8 HD bytes: 3 int8 limb planes each, tri_paged.py).
+        m = self.m
+        self.qdim = m.H * m.HD
         self.attn = nn.ModuleList([
-            Attention(num_heads=8, head_size=128, scale=1.0, num_kv_heads=8,
+            Attention(num_heads=m.HKV, head_size=2 * m.HD, scale=1.0, num_kv_heads=m.HKV,
                       cache_config=vllm_config.cache_config, prefix=f"model.layers.{i}.self_attn.attn")
             for i in range(self.m.L)])
         self.layer0 = "model.layers.0.self_attn.attn"
@@ -131,7 +134,7 @@ class BitExactLlamaForCausalLM(nn.Module):
             return self._captured_decode(input_ids, positions, meta)
         x = self.embed_input_ids(input_ids) if inputs_embeds is None else inputs_embeds.long()
         N = x.shape[0]
-        plan = None if meta is None else paged.make_plan(meta, N, positions)
+        plan = None if meta is None else paged.make_plan(meta, N, positions, self.qdim)
         if plan is not None and self.plan_log:
             self._log_plan(plan)
         if plan is not None and not self.use_graphs and not plan.pre and plan.n == N \
