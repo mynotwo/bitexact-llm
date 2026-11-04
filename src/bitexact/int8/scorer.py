@@ -15,7 +15,9 @@ The whole host-side layout (ids, positions, cache slots, tile gather / scatter i
 batch and uploaded in one copy, and no step reads a device value on the host, so a chunk is a fixed sequence of kernel
 launches (the only syncs are the final copy and the overflow-flag check).
 
-On CPU score() runs the padded reference flow (float64 GEMM), which gives the same integers.
+On CPU score() runs the padded reference flow (float64 GEMM), which gives the same integer logits (bit for bit,
+the row hashes are equal). The log p are computed from them in float64 on the device in use, so a CPU and a GPU
+log p may differ in the last bits (about 1e-13); on one device they are bit-equal for any batch composition.
 """
 
 import hashlib
