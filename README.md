@@ -357,7 +357,8 @@ Throughput on one H800 (GPU empty before the run; 128 input and 128 output token
 | vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 214 | 7,515 | 33,387 |
 | integer plugin before the changes below | 235 | 4,414 | 9,341 |
 | integer plugin after the four changes below | 388 | 9,570 | 23,978 |
-| integer plugin, current (three further changes, later session) | 446 | 10,988 | 27,176 |
+| integer plugin after three further changes (later session) | 446 | 10,988 | 27,176 |
+| integer plugin, current (five more changes, third session) | 529 | 13,330 | 29,569 |
 
 Each cell of the first four rows is the median of three timed runs on the same GPU in one session, alternating
 between configurations. The last row is the median of five runs from a later session on the same GPU type. In that session the
@@ -368,6 +369,12 @@ plugin gives 441 / 9,398 / 18,024 tok/s; that step is bound by host-side work, s
 but only with `TRITON_ATTN`: with the default FlashAttention backend its logits for a prompt run alone
 differed from the same prompt inside batches of 32 and 128 at 104 and 197 of 512 positions. It guarantees
 batch invariance on one GPU and software stack, not agreement across GPU types or CPUs.
+
+The current row is the median of five runs in a third session, alternating with the previous plugin, which
+measured 451 / 11,038 / 29,190 there (T = 0); stock vLLM measured 610 / 16,148 / 33,525 and batch-invariant vLLM
+215 / 7,522 / 34,825. So the plugin is 2.5x / 1.8x batch-invariant vLLM at batch 1 / 32 and 85% of it at batch 128.
+At T = 1 it gives 510 / 12,224 / 28,688 tok/s (previous plugin 447 / 10,087 / 20,319), so most of the T = 1
+host overhead is gone.
 
 Four changes, all verified bit-identical (14/14 suite runs with 0 differing tokens or logits hashes, hash
 files byte-equal to the previous commit), raised plugin throughput 1.65x / 2.17x / 2.57x:
@@ -401,18 +408,51 @@ decode step from 4.58 to 3.48 ms at batch 128:
   (logprobs, penalties, logit bias, structured output) keep the previous path. Logits and sampling fell
   from 0.58 to 0.41 ms per step at T = 0 and from 1.36 to 0.76 ms at T = 1.
 
-Measurements, profiles and scripts are in `experiments/perf/` (`p2_merge/RESULTS.md` for the combined run).
+Five more changes, verified the same way (14/14 suite runs with hash files byte-equal to the previous commit, token
+dumps identical) plus the 8B and speculative-decoding checks below:
+
+- Per-request sampler seeds and step counters are built on the GPU from vectorised per-slot arrays, not in a
+  Python loop per request. Step time not spent in GPU kernels at batch 128, T = 1 fell from 2.14 to 0.31 ms.
+- RMSNorm with the residual add, the QKV split with RoPE, and the attention output requantization run as three
+  fused Triton kernels (1B geometry; `BITEXACT_FUSE=0` turns them off). Kernels per decode step fell from 486
+  to 206.
+- Long-context split-KV attention uses 64-key tiles and a new split-count rule. Decode at S = 16,384 fell from
+  2.38 to 1.97 ms per step at batch 1 and from 6.58 to 5.21 ms at batch 8; at S = 32,768 from 2.96 to 2.45 and
+  from 10.90 to 8.86 ms.
+- Llama-3.1-8B runs in the plugin (int8 mode, dimensions and Llama-3.1 RoPE scaling read from the config,
+  head-dim-128 score scale with load-time bounds at most 2^33.1 against a 2^38 limit). It matches the standalone
+  int8 `IntLlama` 8B reference in every token and logits hash over 7 suite runs, and is batch invariant at
+  batch 1 / 32 / 128 with graphs and eager.
+- vLLM's `ngram` speculative decoding works with the plugin and does not change any token: each draft row is
+  sampled with its own position's seed and step, so a draft is accepted only when it equals the token plain
+  decoding produces there. With 4 draft tokens it gives 1.6x to 1.9x at batch 1 and is slower at batch 32
+  (0.4x to 0.9x), so it is off unless the user sets `speculative_config`.
+
+8B throughput, same H800 and settings (T = 0, median of three runs, tok/s):
+
+| Configuration | Batch 1 | Batch 32 | Batch 128 |
+|---|---|---|---|
+| vLLM bf16, CUDA graphs (stock) | 152 | 4,510 | 14,054 |
+| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 50 | 1,751 | 10,635 |
+| integer plugin, Llama-3.1-8B | 152 | 4,025 | 8,250 |
+
+At 8B every linear layer uses `torch._int_mm` (the Triton GEMM tile table covers only 1B shapes) and the fused
+kernels are off, so batch 128 trails batch-invariant vLLM.
+
+Measurements, profiles and scripts are in `experiments/perf/` (`p2_merge/RESULTS.md` and `p3_merge/RESULTS.md`
+for the combined runs).
 
 Long-context decode, one H800, plugin graph replay, S = 16,384 (`tests/vllm/longctx_step.py`, CUDA event median):
 
-| Batch | Decode ms per step | Prefill of a 512-token chunk at S = 16,384 |
+| Batch | Decode ms per step | Prefill of a 512-token chunk at S = 16,384 (before the five changes) |
 |---|---|---|
-| 1 | 2.38 | 75 ms |
-| 8 | 6.58 | 75 ms |
+| 1 | 1.97 | 75 ms |
+| 8 | 5.21 | 75 ms |
 
 Plugin limitations:
 
-- Single GPU only (TP = 1, PP = 1); no speculative decoding.
+- Single GPU only (TP = 1, PP = 1). Speculative decoding tested only with vLLM's `ngram` proposer, and checked
+  on tokens, not logits hashes.
 - Sampling uses only temperature and seed. top-k, top-p, min-p, repetition penalties and logit bias are
   ignored. Requests without a seed use seed 0, so two such requests with the same temperature get the same
   noise.
@@ -435,7 +475,8 @@ difference is exactly zero. Inference only; no training was run.
 
 ## Limitations
 
-- Two models: Llama-3.2-1B (both modes and the vLLM plugin) and Llama-3.1-8B (exact mode only). Shapes
+- Two models: Llama-3.2-1B (both modes and the vLLM plugin) and Llama-3.1-8B (exact mode, and int8 mode in the
+  vLLM plugin). Shapes
   are read from the constants file; other Llama sizes need new bound checks.
 - Contexts up to 4,096 positions in exact mode and 2,048 in int8 mode (the RoPE table length; the vLLM
   plugin rebuilds longer tables at load time).
