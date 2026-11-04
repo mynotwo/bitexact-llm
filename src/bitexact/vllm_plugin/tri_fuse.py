@@ -24,7 +24,6 @@ from bitexact.int8.consts import FG, FR, FT
 from bitexact.int8.ops import EPS40, qmax
 from bitexact.int8.segs import FQ, FV
 from bitexact.intops import LIM
-from bitexact.llama import D, FF, H, HD, HKV
 from bitexact.vllm_plugin import tri_mlp
 from bitexact.vllm_plugin.tri_mlp import _bitlen, _rsh
 
@@ -33,8 +32,6 @@ SHR = tl.constexpr(FT + FR - FQ)                              # RoPE shift
 EPSC = tl.constexpr(EPS40)
 QMAX = tl.constexpr(qmax(2))
 LIM3 = tl.constexpr(LIM[3])
-G = H // HKV
-HC, HKVC, HDC, GC = tl.constexpr(H), tl.constexpr(HKV), tl.constexpr(HD), tl.constexpr(G)
 
 
 @triton.jit
@@ -146,6 +143,7 @@ def add_norm(m, c, lin, mant, e, x, gamma):
 def _run(m, c, lin, mant, e, x, ids, gamma, mode, norm):
     scratch(m)
     M = ids.shape[0] if mode == 0 else x.shape[0]
+    D = m.D
     xo = torch.empty(M, D, dtype=torch.long, device=m.dev)
     if norm:
         q, pad = _limbs(M, D, m.dev)
@@ -160,7 +158,8 @@ def _run(m, c, lin, mant, e, x, ids, gamma, mode, norm):
 
 @triton.jit
 def _qkv_kernel(c_ptr, m_ptr, fmsh_ptr, pmant_ptr, pe_ptr, cos_ptr, sin_ptr, pos_ptr, slot_ptr, kv_ptr, q_ptr,
-                err_ptr, M, sc_nb, sc_h, sc_bs, BS: tl.constexpr):
+                err_ptr, M, sc_nb, sc_h, sc_bs, BS: tl.constexpr, HC: tl.constexpr, HKVC: tl.constexpr,
+                HDC: tl.constexpr, GC: tl.constexpr):
     row = tl.program_id(0)
     h = tl.program_id(1)
     fmsh, mant, e = tl.load(fmsh_ptr), tl.load(pmant_ptr + row), tl.load(pe_ptr + row)
@@ -208,14 +207,17 @@ def _qkv_kernel(c_ptr, m_ptr, fmsh_ptr, pmant_ptr, pe_ptr, cos_ptr, sin_ptr, pos
 def qkv(m, c, lin, mant, e, pos, slot, cache):
     """qkv GEMM output c -> q int64 [N, HKV, G, HD]; K / V of the tokens are stored at slot in cache (int8 planes)."""
     M = pos.shape[0]
+    H, HKV, HD = m.H, m.HKV, m.HD
+    G = H // HKV
     q = torch.empty(M, HKV, G, HD, dtype=torch.long, device=m.dev)
     _qkv_kernel[(M, HKV)](c, lin[1], lin[2], mant, e, m.cos, m.sin, pos, slot, cache, q, m._err8, M,
-                          cache.stride(0), cache.stride(1), cache.stride(2), BS=cache.shape[2], num_warps=2)
+                          cache.stride(0), cache.stride(1), cache.stride(2), BS=cache.shape[2], HC=H, HKVC=HKV,
+                          HDC=HD, GC=G, num_warps=2)
     return q
 
 
 @triton.jit
-def _attn_out_kernel(num_ptr, den_ptr, q_ptr, mant_ptr, e_ptr, M, PAD, K2: tl.constexpr):
+def _attn_out_kernel(num_ptr, den_ptr, q_ptr, mant_ptr, e_ptr, M, PAD, K2: tl.constexpr, HDC: tl.constexpr):
     row = tl.program_id(0)
     col = tl.arange(0, K2)
     if row < M:
@@ -236,9 +238,10 @@ def _attn_out_kernel(num_ptr, den_ptr, q_ptr, mant_ptr, e_ptr, M, PAD, K2: tl.co
 def attn_out(m, num, den):
     """num [N, HKV, G, HD], den [N, HKV, G, 1] -> (limbs, mant, e) of pre_plain(rdiv(num << 2, den))."""
     M = num.shape[0]
-    q, pad = _limbs(M, H * HD, m.dev)
+    K2 = num.shape[1] * num.shape[2] * num.shape[3]
+    q, pad = _limbs(M, K2, m.dev)
     mant, e = torch.empty(M, dtype=torch.long, device=m.dev), torch.empty(M, dtype=torch.long, device=m.dev)
-    _attn_out_kernel[(max(M, pad),)](num, den, q, mant, e, M, pad, K2=H * HD, num_warps=8)
+    _attn_out_kernel[(max(M, pad),)](num, den, q, mant, e, M, pad, K2=K2, HDC=num.shape[3], num_warps=8)
     return q, mant, e
 
 
