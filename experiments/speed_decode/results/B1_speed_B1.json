@@ -1,0 +1,13 @@
+{
+ "B": 1,
+ "gen": 512,
+ "tokens": 512,
+ "sec": [
+  1.372,
+  1.37,
+  1.388
+ ],
+ "tok_per_s_median": 373.3,
+ "ms_per_step_median": 2.679,
+ "gpu": "NVIDIA H100 80GB HBM3"
+}

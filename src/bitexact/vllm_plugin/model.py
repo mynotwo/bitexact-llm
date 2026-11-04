@@ -29,6 +29,7 @@ from bitexact.int8.consts import FT
 from bitexact.int8.model import IntLlama
 from bitexact.llama import rope_tables
 from bitexact.vllm_plugin import paged, tri_paged
+from bitexact.vllm_plugin.logits import DeferredCheck, lm_logits
 from bitexact.vllm_plugin.sampler import STASH
 
 MODEL = None             # the loaded model in this process (the sampler reads the ln table from it)
@@ -59,6 +60,7 @@ class BitExactLlamaForCausalLM(nn.Module):
         self.m = IntLlama(c, dev, nl=int(getattr(cfg, "bitexact_nl", 2)),
                           compiled=bool(int(os.environ.get("BITEXACT_COMPILE", "1"))))
         self.m.ptab = tri_paged.weight_table(self.m.exp)
+        self.check = DeferredCheck(self.m)
         # Plugin-side graphs only when vLLM's own are off (enforce_eager); otherwise vLLM captures
         # uniform decode batches through _captured_decode.
         self.use_graphs = bool(int(os.environ.get("BITEXACT_GRAPHS", "1"))) and \
@@ -130,8 +132,8 @@ class BitExactLlamaForCausalLM(nn.Module):
         return x
 
     def compute_logits(self, hidden_states):
-        li = self.m.logits(hidden_states.long())
-        self.m.check()
+        li = lm_logits(self.m, hidden_states.long())
+        self.check()
         STASH.logits = li
         return li.float() * (2.0 ** -16)
 
