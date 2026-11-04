@@ -11,8 +11,8 @@ import json
 import os
 import statistics as stt
 
-ARMS = ["A", "A_TIS", "B", "C"]
-COL = {"A": "#1f77b4", "A_TIS": "#17becf", "B": "#ff7f0e", "C": "#2ca02c"}
+ARMS = ["A", "A_TIS", "B", "B_TIS", "B_fp32", "C"]
+COL = {"A": "#1f77b4", "A_TIS": "#17becf", "B": "#ff7f0e", "B_TIS": "#d62728", "B_fp32": "#9467bd", "C": "#2ca02c"}
 
 
 def jl(p):

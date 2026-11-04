@@ -68,11 +68,11 @@ class VllmSampler:
 
 
 class FloatTrainer:
-    """HF LlamaForCausalLM (bf16, sdpa, untied) run through functional_call on bf16 casts of fp32 leaves
+    """HF LlamaForCausalLM (sdpa, untied) run through functional_call on bf16 (or fp32) casts of fp32 leaves
     that hold the dequantized weights. Gradients accumulate on the leaves and are copied to the master
     (straight-through estimator: d quant(P) / dP := I)."""
 
-    def __init__(self, model_dir, device):
+    def __init__(self, model_dir, device, dtype=torch.bfloat16):
         from transformers import AutoConfig, AutoModelForCausalLM
         cfg = AutoConfig.from_pretrained(model_dir)
         cfg.tie_word_embeddings = False
@@ -82,6 +82,7 @@ class FloatTrainer:
         for p in self.model.parameters():
             p.requires_grad_(False)
         self.dev = torch.device(device)
+        self.dtype = dtype
         self.leaves = None
 
     def set_weights(self, fw):
@@ -112,7 +113,7 @@ class FloatTrainer:
         ids, mask = ids.to(self.dev), mask.to(self.dev)
         ctx = torch.enable_grad() if grad else torch.no_grad()
         with ctx:
-            params = {k: v.to(torch.bfloat16) for k, v in self.leaves.items()}
+            params = {k: v.to(self.dtype) for k, v in self.leaves.items()}
             h = self._hidden(ids, mask, params)
             sel = torch.cat([h[i, len(p) - 1:len(p) - 1 + len(r)] for i, (p, r) in enumerate(zip(prompts, resps))])
             tok = torch.tensor([t for r in resps for t in r], device=self.dev)

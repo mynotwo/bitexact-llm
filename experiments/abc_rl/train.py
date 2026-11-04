@@ -1,6 +1,6 @@
 """Minimal GRPO for the A/B/C train/infer arithmetic experiment (Llama-3.2-1B, GSM8K train).
 
-  python train.py --arm {A,A_TIS,B,C} --seed S --steps 200 --out RUN_DIR [--hf HF_DIR --const INT8_CONST --data GSM_DIR]
+  python train.py --arm {A,A_TIS,B,B_TIS,B_fp32,C} --seed S --steps 200 --out RUN_DIR [--hf HF_DIR --const INT8_CONST --data GSM_DIR]
 
 Every step: fp32 master -> BitExact int8 constants (intq.quantize) -> the same quantized weights go to the
 integer engine and (dequantized, bf16) to vLLM and the HF trainer. Arms differ only in where the sampler
@@ -8,6 +8,7 @@ log p and the trainer log p values come from:
   A      sample vLLM bf16, ratio = pi_float_train / pi_vllm, PPO clip
   A_TIS  sample vLLM bf16, ratio = pi_train / sg(pi_train) (= 1) times w = min(sg(pi_train / pi_vllm), 2)
   B      sample integer engine, ratio = pi_float_train / pi_int_sampler, PPO clip
+  B_TIS  B with the A_TIS correction;  B_fp32  B with the trainer forward in fp32 (TF32 off)
   C      sample integer engine, trainer log p = logp_float + sg(logp_int_rescored - logp_float), PPO clip
 One optimizer step per RL step (512 rollouts, gradient accumulation over microbatches), token-mean loss,
 group-normalized advantages, no reference KL (beta = 0; the logged KL is sampler vs trainer).
@@ -76,7 +77,7 @@ def evaluate(eng, vs, tok, test, max_new, bs):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arm", choices=["A", "A_TIS", "B", "C"], required=True)
+    ap.add_argument("--arm", choices=["A", "A_TIS", "B", "B_TIS", "B_fp32", "C"], required=True)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--steps", type=int, default=200)
     ap.add_argument("--prompts", type=int, default=64)
@@ -116,12 +117,13 @@ def main():
     mdir = floatm.write_model_dir(a.hf, fw, os.path.join(a.work, "deq_model"))
     vs = floatm.VllmSampler(mdir, a.gpu_mem, max_seqs=512)          # before the trainer allocates
     eng = intq.IntEngine(a.const, c, dev)
-    tr = floatm.FloatTrainer(mdir, dev)
+    tr = floatm.FloatTrainer(mdir, dev, torch.float32 if a.arm == "B_fp32" else torch.bfloat16)
+    torch.backends.cudnn.allow_tf32 = False
     opt = torch.optim.AdamW(list(P.values()), lr=a.lr, betas=(0.9, 0.999), weight_decay=0.0, eps=1e-8)
     log = open(os.path.join(a.out, "steps.jsonl"), "a")
     evlog = open(os.path.join(a.out, "eval.jsonl"), "a")
     gen = batches(len(train), a.prompts, a.seed)
-    int_sample = a.arm in ("B", "C")
+    int_sample = a.arm in ("B", "B_TIS", "B_fp32", "C")
     print(f"start arm {a.arm} seed {a.seed} mem {torch.cuda.memory_allocated() / 2**30:.1f}G", flush=True)
 
     for step in range(a.steps + 1):
@@ -198,7 +200,7 @@ def main():
             else:
                 lp_tr = lpf
                 delta = lpf64 - sl
-            if a.arm == "A_TIS":
+            if a.arm in ("A_TIS", "B_TIS"):
                 w = torch.exp(delta).clamp(max=a.tis_c).float()
                 ratio = torch.exp(lpf - lpf.detach())
                 acc["w"].append(w)
