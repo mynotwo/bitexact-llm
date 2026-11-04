@@ -16,7 +16,8 @@ for t in tags:
         out.append(f"scorer gate {sum(r['bit_exact'] for r in rs)}/{len(rs)}")
     p = f"{d}/{t}.stime.jsonl"
     if os.path.exists(p):
-        out.append("scorer tok/s " + " ".join(f"{r['tag'].split('-', 1)[1]}={r['tok_per_s']:.0f}" for r in map(json.loads, open(p))))
+        rs = [json.loads(x) for x in open(p)]
+        out.append("scorer tok/s " + " ".join(f"{r['tag'].split('-', 1)[1]}={r['tok_per_s']:.0f}" for r in rs))
     sp = []
     for b in (1, 64, 512):
         p = f"{d}/{t}_speed_B{b}.json"
@@ -34,9 +35,11 @@ for t in tags:
         for x in open(p):
             r = json.loads(x.split("RESULT ", 1)[1])
             cells.setdefault((r["temp"], r["batch"]), []).append(r["tok_per_s"])
-        out.append("bench " + " ".join(f"T{k[0]:g}B{k[1]}={statistics.median(v):.0f}(n{len(v)})" for k, v in sorted(cells.items())))
+        out.append("bench " + " ".join(f"T{k[0]:g}B{k[1]}={statistics.median(v):.0f}(n{len(v)})"
+                                       for k, v in sorted(cells.items())))
     p = f"{d}/{t}_suite.log"
     if os.path.exists(p):
         s = open(p).read()
-        out.append("suite " + " ".join(re.findall(r"compare(?:_long)?_exit \d+", s)) + f" tracebacks={s.count('Traceback')}")
+        exits = " ".join(re.findall(r"compare(?:_long)?_exit \d+", s))
+        out.append(f"suite {exits} tracebacks={s.count('Traceback')}")
     print(" | ".join(out))
