@@ -1,0 +1,11 @@
+{"step": 0, "rewards_equal": true, "tokens_equal": true, "sampler_lp_equal": true, "scorer_lp_equal": true, "n_tok": 109538, "delta_nonzero_old": 0, "delta_nonzero_new": 0}
+{"step": 1, "rewards_equal": true, "tokens_equal": true, "sampler_lp_equal": true, "scorer_lp_equal": true, "n_tok": 107318, "delta_nonzero_old": 0, "delta_nonzero_new": 0}
+{"step": 2, "rewards_equal": true, "tokens_equal": true, "sampler_lp_equal": true, "scorer_lp_equal": true, "n_tok": 110501, "delta_nonzero_old": 0, "delta_nonzero_new": 0}
+{"step": 3, "rewards_equal": true, "tokens_equal": true, "sampler_lp_equal": true, "scorer_lp_equal": true, "n_tok": 111130, "delta_nonzero_old": 0, "delta_nonzero_new": 0}
+{"step": 4, "rewards_equal": true, "tokens_equal": true, "sampler_lp_equal": true, "scorer_lp_equal": true, "n_tok": 110557, "delta_nonzero_old": 0, "delta_nonzero_new": 0}
+{"step": 5, "rewards_equal": true, "tokens_equal": true, "sampler_lp_equal": true, "scorer_lp_equal": true, "n_tok": 112117, "delta_nonzero_old": 0, "delta_nonzero_new": 0}
+{"step": 6, "rewards_equal": true, "tokens_equal": true, "sampler_lp_equal": true, "scorer_lp_equal": true, "n_tok": 107790, "delta_nonzero_old": 0, "delta_nonzero_new": 0}
+{"step": 7, "rewards_equal": true, "tokens_equal": true, "sampler_lp_equal": true, "scorer_lp_equal": true, "n_tok": 109321, "delta_nonzero_old": 0, "delta_nonzero_new": 0}
+{"step": 8, "rewards_equal": true, "tokens_equal": true, "sampler_lp_equal": true, "scorer_lp_equal": true, "n_tok": 109533, "delta_nonzero_old": 0, "delta_nonzero_new": 0}
+{"step": 9, "rewards_equal": true, "tokens_equal": true, "sampler_lp_equal": true, "scorer_lp_equal": true, "n_tok": 106803, "delta_nonzero_old": 0, "delta_nonzero_new": 0}
+ALL EQUAL
