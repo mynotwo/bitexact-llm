@@ -3,7 +3,7 @@
 ## Conclusion
 1. One merge bug found and fixed (commit d306628). `graph._decode_fused` (fuse lane) used `paged.G`, which the 8b lane removed, so pytest failed (2 of 43: `test_decode_eager`, `test_decode_cuda_graph`) and the default `BITEXACT_FUSE=1` path would have crashed. Fix: use `m.H // m.HKV`, and take the fused path only for the 1B geometry (tri_fuse kernels are compiled with the 1B module constants H/HKV/HD/D/FF), so 8B runs the unfused path. No other code touched. Everything below ran on 7c79e4f (= d306628 + runner); a first launch on 0b270c6 was aborted at the pytest failure.
 2. Bit identity: all PASS (list below). The `IntSampler.apply` conflict resolution is correct: spec's multi-row branch plus host's numpy path, covered by the spec k=0/k=4 checks and the suite.
-3. 1B tok/s (median of 5, alternating base/merge): merge is faster or equal in every cell. T=0 B=1 +17%, B=32 +21%, B=128 +1.3%; T=1 B=1 +14%, B=32 +21%, B=128 +41%. Long context S=16k/32k: -3 to -19% ms/step.
+3. 1B tok/s (median of 5, alternating base/merge): merge is faster or equal in every cell. T=0 B=1 +17%, B=32 +21%, B=128 +1.3%; T=1 B=1 +14%, B=32 +21%, B=128 +41%. Long context S=16k/32k: -17 to -21% ms/step.
 4. 8B: plugin equals stock at B=1 (152 vs 152), is 11% behind stock at B=32, 41% behind at B=128 (8,250 vs 14,054), and 22% behind vLLM BATCH_INVARIANT+TRITON_ATTN at B=128 (10,635). It is 3x faster than BI+TRITON at B=1 and 2.3x at B=32.
 5. Slower anywhere: no lane is slower than base on 1B in any median. Spec at B=32 is slower than k=0 (per the p3_spec lane; off by default). Profiler: wall-minus-busy grows 0.62 -> 1.19 ms at T=0 B=128 (host gaps are now exposed after the kernels shrank), which is why wall improves 5.6% while kernel time improves 23%.
 
