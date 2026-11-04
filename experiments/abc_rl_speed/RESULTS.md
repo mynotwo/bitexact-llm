@@ -50,3 +50,22 @@ Fix: `intq.int_logp` computes the vocabulary part (max, clamp, table lookups, in
 | C-new after (`runs/C_new_v2_s1`) | 17.9 | 6.7 | 5.6 | 5.4 | 0.2 |
 
 Bit check after the change: `bitcheck.py` 10 steps, C-old against C-new, all rewards, tokens, sampler log p and scorer log p equal, delta = 0 (`ALL EQUAL`); also equal to the previous C-new output. Step 0 hashes of the RL run equal the previous run. `scorer.py` unchanged, so the scorer gate is not re-run. Remaining scorer time is layers + attention at bench speed.
+
+## Sampling gap: C-new 6.7 s vs D 4.1 s (profile, no loop change)
+`prof_sample.sh` / `prof_sample.py` (one H100 each, sampler built in train.py's order, 512 rollouts = step-0..2 prompts and seeds of the RL run, no trainer; logs in `runs/ps/`). C: `--plugin-gpu-mem 0.20`; D: `--gpu-mem 0.16`; `max_num_seqs 512`.
+
+| | C-new | D |
+|---|---|---|
+| KV cache (tokens) | 138,048 | 277,200 |
+| preemptions per step | 0 | 0 |
+| engine steps (1 prefill + 256 decode) | 257 | 257 |
+| decode batch, mean / median / max | 430 / 427 / 512 | 420 / 420 / 512 |
+| prefill (s) | 0.26 | 0.03-0.58 |
+| decode total (s) | 5.9 | 4.3 |
+| decode ms/step at that batch | 22.5-23.0 | 16.6-17.7 |
+| `generate()` total (s) | 6.2 | 4.5-4.9 |
+
+1. The KV cache is not the limit. All 512 sequences run together (peak batch 512, median 427), nothing is preempted, 138k tokens are enough for 512 x ~450. The 0.20 vs 0.16 split changes nothing here; the plugin KV takes 64 KB/token vs 32 KB/token in vLLM (half the tokens for the same 8.4 GiB).
+2. The gap is GPU kernel time per decode step at batch ~430: 22.6 ms measured and 22.6 ms of CUDA time per step in a torch profile (CPU is not on the critical path). Bench B=64 (5.8 ms) scales roughly linearly to ~23 ms at B=430-512. Top CUDA time (share of step): `_acc_kernel` 22%, int8 cutlass GEMM 13%, compiled quantise/requantise triton kernels (`triton_red_fused...amax...`) ~12% + ~12% in two more, `_max_kernel` 9%. D: `matmul_kernel_persistent` 58%, `kernel_unified_attention` 24%, sampling 8%.
+3. The sampler's `int_logp` hook costs 0.5 ms/step (22.3 vs 22.8 ms with the hook stubbed, `--nolog`), 0.13 s per step. Not the gap.
+4. Loop-side levers (memory split, `max_num_seqs`, trainer offload) have no effect on a run that is already kernel-bound at full batch, so train.py is unchanged and no C-new/D rerun was needed. The remaining 1.5 s is in plugin kernels (src/bitexact/vllm_plugin, `int8`): attention `_acc_kernel`, `_max_kernel`, the requantise triton kernels. Plugin-side note, not changed here.
