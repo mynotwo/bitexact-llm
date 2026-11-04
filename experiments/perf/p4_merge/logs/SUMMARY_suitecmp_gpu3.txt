@@ -1,0 +1,32 @@
+02:29:48 GPU 3, stages: suitecmp, trees: base repo, repo 1aa7875, base 6d42e87
+== /data41/audreymao/p4_merge/out/suite/base_ref /data41/audreymao/p4_merge/out/suite/repo_ref /data41/audreymao/p4_merge/out/suite/repo_alone_pc1 /data41/audreymao/p4_merge/out/suite/repo_alone_pc0 /data41/audreymao/p4_merge/out/suite/repo_busy_pc1_s0 /data41/audreymao/p4_merge/out/suite/repo_busy_pc0_s1 /data41/audreymao/p4_merge/out/suite/repo_busy_pc1_s2_b64 /data41/audreymao/p4_merge/out/suite/repo_busy_pc1_s3_preempt /data41/audreymao/p4_merge/out/suite/repo_busy_eager_s4 /data41/audreymao/p4_merge/out/suite/repo_busy_vllmgraph_s5 /data41/audreymao/p4_merge/out/suite/repo_alone_vllmgraph
+/data41/audreymao/p4_merge/out/suite/repo_ref: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/suite/repo_alone_pc1: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/suite/repo_alone_pc0: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/suite/repo_busy_pc1_s0: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/suite/repo_busy_pc0_s1: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/suite/repo_busy_pc1_s2_b64: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/suite/repo_busy_pc1_s3_preempt: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/suite/repo_busy_eager_s4: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/suite/repo_busy_vllmgraph_s5: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/suite/repo_alone_vllmgraph: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+== /data41/audreymao/p4_merge/out/suite/base_long_ref /data41/audreymao/p4_merge/out/suite/repo_long_ref /data41/audreymao/p4_merge/out/suite/repo_long_alone /data41/audreymao/p4_merge/out/suite/repo_long_busy /data41/audreymao/p4_merge/out/suite/repo_long_busy_eager
+/data41/audreymao/p4_merge/out/suite/repo_long_ref: targets 3 token_seqs_diff 0 positions 48 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/suite/repo_long_alone: targets 3 token_seqs_diff 0 positions 48 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/suite/repo_long_busy: targets 3 token_seqs_diff 0 positions 48 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/suite/repo_long_busy_eager: targets 3 token_seqs_diff 0 positions 48 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+cmp OK repo_ref.hash
+cmp OK repo_alone_pc1.hash
+cmp OK repo_alone_pc0.hash
+cmp OK repo_busy_pc1_s0.hash
+cmp OK repo_busy_pc0_s1.hash
+cmp OK repo_busy_pc1_s2_b64.hash
+cmp OK repo_busy_pc1_s3_preempt.hash
+cmp OK repo_busy_eager_s4.hash
+cmp OK repo_busy_vllmgraph_s5.hash
+cmp OK repo_alone_vllmgraph.hash
+cmp OK repo_long_ref.hash
+cmp OK repo_long_alone.hash
+cmp OK repo_long_busy.hash
+cmp OK repo_long_busy_eager.hash
+02:29:49 done

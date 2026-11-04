@@ -54,7 +54,7 @@ def main():
     nblk = S // bs
     nb = B * nblk + 1                                      # block 0 = null block
     g = torch.Generator(device="cuda").manual_seed(0)
-    kvs = [tri_paged.to_limbs(torch.randint(-(1 << 20), 1 << 20, (nb, 8, bs, 128), device=dev, dtype=torch.int32,
+    kvs = [tri_paged.to_limbs(torch.randint(-(1 << 20), 1 << 20, (nb, m.HKV, bs, 2 * m.HD), device=dev, dtype=torch.int32,
                                             generator=g)).view(torch.bfloat16) for _ in range(m.L)]
     bt = (torch.arange(B * nblk, device=dev) + 1).view(B, nblk)
     ids = torch.randint(1000, 9000, (B,), device=dev)
