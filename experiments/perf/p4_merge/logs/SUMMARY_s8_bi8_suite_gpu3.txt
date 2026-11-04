@@ -1,0 +1,27 @@
+02:12:43 GPU 3, stages: s8 bi8 suite, trees: base, repo 1aa7875, base 6d42e87
+s8 compare_exit 0
+/data41/audreymao/p4_merge/out/s8/busy_pc1_s2_b64: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/s8/busy_eager_s4: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/s8/busy_vllmgraph_s5: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/s8/alone_vllmgraph: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+/data41/audreymao/p4_merge/out/bi8/bi_eager.log:BATCH_INV PASS rows 192
+/data41/audreymao/p4_merge/out/bi8/bi_graph.log:BATCH_INV PASS rows 192
+02:21:56 start suite base
+02:29:37 end suite base rc=0
+base_ref: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+base_alone_pc1: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+base_alone_pc0: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+base_busy_pc1_s0: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+base_busy_pc0_s1: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+base_busy_pc1_s2_b64: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+base_busy_pc1_s3_preempt: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+base_busy_eager_s4: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+base_busy_vllmgraph_s5: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+base_alone_vllmgraph: targets 12 token_seqs_diff 0 positions 576 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+compare_exit 0
+base_long_ref: targets 3 token_seqs_diff 0 positions 48 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+base_long_alone: targets 3 token_seqs_diff 0 positions 48 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+base_long_busy: targets 3 token_seqs_diff 0 positions 48 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+base_long_busy_eager: targets 3 token_seqs_diff 0 positions 48 missing 0 logit_hash_diff 0 inconsistent_repeats 0
+compare_long_exit 0
+02:29:37 done

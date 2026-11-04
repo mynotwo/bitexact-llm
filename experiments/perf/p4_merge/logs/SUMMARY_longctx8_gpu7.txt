@@ -1,0 +1,16 @@
+04:07:05 GPU 7, stages: longctx8, trees: base repo, repo 1aa7875, base 6d42e87
+04:11:28 done
+04:11:47 GPU 7, stages: longctx8, trees: base repo, repo 1aa7875, base 6d42e87
+/data41/audreymao/p4_merge/out/longctx8/base_s16384_b1_r1.log:{"S": 16384, "B": 1, "decode_ms_per_step": 7.980704069137573, "decode_eager_ms": 16.530224800109863, "prefill512_ms_per_chunk": 512.7206420898438}
+/data41/audreymao/p4_merge/out/longctx8/base_s16384_b1_r2.log:{"S": 16384, "B": 1, "decode_ms_per_step": 7.975631952285767, "decode_eager_ms": 15.985087871551514, "prefill512_ms_per_chunk": 512.1859130859375}
+/data41/audreymao/p4_merge/out/longctx8/base_s16384_b1_r3.log:{"S": 16384, "B": 1, "decode_ms_per_step": 7.985663890838623, "decode_eager_ms": 16.262383460998535, "prefill512_ms_per_chunk": 512.8037719726562}
+/data41/audreymao/p4_merge/out/longctx8/base_s16384_b8_r1.log:{"S": 16384, "B": 8, "decode_ms_per_step": 20.734895706176758, "decode_eager_ms": 22.386943817138672, "prefill512_ms_per_chunk": 512.4373779296875}
+/data41/audreymao/p4_merge/out/longctx8/base_s16384_b8_r2.log:{"S": 16384, "B": 8, "decode_ms_per_step": 20.747615814208984, "decode_eager_ms": 22.180335998535156, "prefill512_ms_per_chunk": 513.0668334960938}
+/data41/audreymao/p4_merge/out/longctx8/base_s16384_b8_r3.log:{"S": 16384, "B": 8, "decode_ms_per_step": 20.7379207611084, "decode_eager_ms": 22.36347198486328, "prefill512_ms_per_chunk": 512.1164245605469}
+/data41/audreymao/p4_merge/out/longctx8/repo_s16384_b1_r1.log:{"S": 16384, "B": 1, "decode_ms_per_step": 7.105311870574951, "decode_eager_ms": 25.460000038146973, "prefill512_ms_per_chunk": 513.3389282226562}
+/data41/audreymao/p4_merge/out/longctx8/repo_s16384_b1_r2.log:{"S": 16384, "B": 1, "decode_ms_per_step": 7.10862398147583, "decode_eager_ms": 14.305856227874756, "prefill512_ms_per_chunk": 512.25146484375}
+/data41/audreymao/p4_merge/out/longctx8/repo_s16384_b1_r3.log:{"S": 16384, "B": 1, "decode_ms_per_step": 7.106816053390503, "decode_eager_ms": 26.07487964630127, "prefill512_ms_per_chunk": 512.5717468261719}
+/data41/audreymao/p4_merge/out/longctx8/repo_s16384_b8_r1.log:{"S": 16384, "B": 8, "decode_ms_per_step": 19.467023849487305, "decode_eager_ms": 20.41545581817627, "prefill512_ms_per_chunk": 512.2840576171875}
+/data41/audreymao/p4_merge/out/longctx8/repo_s16384_b8_r2.log:{"S": 16384, "B": 8, "decode_ms_per_step": 19.45456027984619, "decode_eager_ms": 20.38590431213379, "prefill512_ms_per_chunk": 513.5889587402344}
+/data41/audreymao/p4_merge/out/longctx8/repo_s16384_b8_r3.log:{"S": 16384, "B": 8, "decode_ms_per_step": 19.47377586364746, "decode_eager_ms": 20.482240676879883, "prefill512_ms_per_chunk": 513.4468078613281}
+04:18:00 done

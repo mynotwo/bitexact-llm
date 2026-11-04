@@ -16,7 +16,6 @@ import os
 
 import torch
 
-from bitexact.llama import D, FF, H, HD, HKV
 from bitexact.vllm_plugin import paged, tri_fuse, tri_paged
 
 BUCKETS = [1, 2, 4, 8, 16, 32, 64, 128]
@@ -50,9 +49,8 @@ def _fns():
 
 def decode_forward(m, kvs, ids, pos, slot, bt):
     """ids, pos, slot: [B] device tensors (slot < 0 is redirected to the null block); bt [B, *]."""
-    # tri_fuse's kernels are compiled for the Llama-3.2-1B geometry (module constants); other sizes (8B) take the
-    # unfused path
-    if (FUSE and (m.H, m.HKV, m.HD, m.D, m.FF) == (H, HKV, HD, D, FF) and paged.TRI_MLP and m.nl == 2
+    # tri_fuse's kernels take the geometry from the model (1B and 8B); D must be a power of two (one row per program)
+    if (FUSE and m.D & (m.D - 1) == 0 and m.H * m.HD == m.D and paged.TRI_MLP and m.nl == 2
             and m.dev.type == "cuda" and not m.post_check):
         return _decode_fused(m, kvs, ids, pos, slot, bt)
     x = m.emb[ids].long()

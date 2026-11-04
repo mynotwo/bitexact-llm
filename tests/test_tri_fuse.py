@@ -10,18 +10,24 @@ import pytest
 import torch
 
 CONST = os.environ.get("BITEXACT_INT8_CONST")
+CONST8 = os.environ.get("BITEXACT_INT8_CONST_8B")           # optional: the Llama-3.1-8B constants (adds the 8B geometry)
 pytestmark = [pytest.mark.gpu,
               pytest.mark.skipif(not (torch.cuda.is_available() and CONST), reason="needs CUDA + BITEXACT_INT8_CONST")]
 pytest.importorskip("triton")
 
 
-@pytest.fixture(scope="module")
-def m():
+@pytest.fixture(scope="module", params=["1b", "8b"])
+def m(request):
     from bitexact.int8.model import IntLlama
     from bitexact.vllm_plugin import tri_fuse
-    mm = IntLlama(torch.load(CONST, map_location="cpu", weights_only=False), "cuda", nl=2, compiled=False)
+    path = CONST if request.param == "1b" else CONST8
+    if not path:
+        pytest.skip("needs BITEXACT_INT8_CONST_8B")
+    mm = IntLlama(torch.load(path, map_location="cpu", weights_only=False), "cuda", nl=2, compiled=False)
     tri_fuse.scratch(mm)
-    return mm
+    yield mm
+    del mm
+    torch.cuda.empty_cache()
 
 
 def _c(M, N, g, scale):
@@ -33,7 +39,7 @@ def _c(M, N, g, scale):
 
 def _pre(m, M, g):
     """A (mant, e) pair as pre_norm would give."""
-    x = torch.randint(-(1 << 22), 1 << 22, (M, 2048), device="cuda", generator=g)
+    x = torch.randint(-(1 << 22), 1 << 22, (M, m.D), device="cuda", generator=g)
     return m.sg.pre_norm(x, m.layers[0]["ga"])[1:]
 
 
@@ -62,8 +68,8 @@ def test_add_norm_exact(m, M):
 
 @pytest.mark.parametrize("M", [1, 5, 128])
 def test_qkv_store_exact(m, M):
-    from bitexact.llama import HD, HKV
     from bitexact.vllm_plugin import tri_fuse, tri_paged
+    HD, HKV = m.HD, m.HKV
     g = torch.Generator(device="cuda").manual_seed(M + 7)
     lin = m.layers[2]["wqkv"]
     bs, nb = 16, 40
@@ -80,7 +86,7 @@ def test_qkv_store_exact(m, M):
         got_c = torch.zeros_like(ref_c)
         m.err.zero_()
         q = tri_fuse.qkv(m, c, lin, mant, e, pos, slot, got_c)
-        assert torch.equal(q, qg.view(M, HKV, 4, HD)) and torch.equal(got_c, ref_c), (M, scale)
+        assert torch.equal(q, qg.view(M, HKV, m.H // HKV, HD)) and torch.equal(got_c, ref_c), (M, scale)
         assert bool(m.err) == bool(flag), (M, scale)
     m.err.zero_()
 
@@ -90,9 +96,9 @@ def test_attn_out_and_mlp_exact(m, M):
     from bitexact.vllm_plugin import paged, tri_fuse, tri_mlp
     g = torch.Generator(device="cuda").manual_seed(M + 11)
     for scale in (1 << 10, 1 << 26):
-        num = torch.randint(-scale * 50, scale * 50 + 1, (M, 8, 4, 64), device="cuda", generator=g)
-        den = torch.randint(1, scale + 2, (M, 8, 4, 1), device="cuda", generator=g)
-        ref = m.sg.pre_plain(paged.attn_div(num, den).reshape(M, 2048))
+        num = torch.randint(-scale * 50, scale * 50 + 1, (M, m.HKV, m.H // m.HKV, m.HD), device="cuda", generator=g)
+        den = torch.randint(1, scale + 2, (M, m.HKV, m.H // m.HKV, 1), device="cuda", generator=g)
+        ref = m.sg.pre_plain(paged.attn_div(num, den).reshape(M, m.H * m.HD))
         got = tri_fuse.attn_out(m, num, den)
         assert all(torch.equal(a, b) for a, b in zip(got, ref)), (M, scale)
     lin = m.layers[1]["wgu"]
@@ -114,9 +120,9 @@ def test_final_bound_flag(m, big):
     from bitexact.vllm_plugin import tri_fuse
     lin = m.layers[0]["wd"]
     M = 4
-    x = torch.zeros(M, 2048, dtype=torch.long, device="cuda")
+    x = torch.zeros(M, m.D, dtype=torch.long, device="cuda")
     x[2, 5] = (1 << 42) if big else (1 << 42) - 1
-    c = torch.zeros(2 * M + 16, 2048, dtype=torch.int32, device="cuda")
+    c = torch.zeros(2 * M + 16, m.D, dtype=torch.int32, device="cuda")
     mant = torch.ones(M, dtype=torch.long, device="cuda")
     e = torch.zeros(M, dtype=torch.long, device="cuda")
     m.err.zero_()

@@ -1,0 +1,10 @@
+02:24:31 GPU 0, stages: tokens tokcmp spec, trees: base repo, repo 1aa7875, base 6d42e87
+tokens mixed IDENTICAL
+tokens t0 IDENTICAL
+tokens lp IDENTICAL
+spec bench_B1_T0.7 DIFF
+spec bench_B1_T0 IDENTICAL
+spec rep_B1_T0.7 IDENTICAL
+spec rep_B1_T0 IDENTICAL
+spec suite IDENTICAL
+02:32:44 done

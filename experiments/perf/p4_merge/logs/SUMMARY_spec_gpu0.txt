@@ -1,0 +1,7 @@
+02:33:53 GPU 0, stages: spec, trees: base repo, repo 1aa7875, base 6d42e87
+spec bench_B1_T0.7 IDENTICAL
+spec bench_B1_T0 IDENTICAL
+spec rep_B1_T0.7 IDENTICAL
+spec rep_B1_T0 IDENTICAL
+spec suite IDENTICAL
+02:38:59 done
