@@ -36,6 +36,27 @@ def test_fused_paged_attention_exact():
                 assert torch.equal(num.cpu(), ref_num) and torch.equal(den2.cpu(), den), (R, M, ns)
 
 
+def test_attend_nosplit_reuse_and_empty_rows():
+    """nsplit == 1 stores instead of using atomics and reuses the row-max scratch: a dirty scratch, a smaller call
+    after a larger one and rows with no visible key (qpos = -1) give the same num / den as the split path."""
+    from bitexact.int8.consts import exp_table
+    from bitexact.vllm_plugin import tri_paged
+    g = torch.Generator(device="cuda").manual_seed(1)
+    ptab = tri_paged.weight_table(exp_table().cuda())
+    nb, bs, HKV, HD = 64, 16, 8, 64
+    c = torch.randint(-(1 << 14), 1 << 14, (nb, HKV, bs, 2 * HD), device="cuda", generator=g).to(torch.int32)
+    for R, M in [(2, 300), (3, 7), (1, 64), (2, 5)]:
+        bt = torch.randint(1, nb, (R, 40), device="cuda", generator=g).to(torch.int32)
+        qpos = torch.randint(-1, 500, (R, M), device="cuda", generator=g)
+        qpos[:, 0] = -1
+        q = torch.randint(-(1 << 14), 1 << 14, (R, HKV, M, HD), device="cuda", generator=g)
+        tri_paged._scratch(1 << 20, q.device).fill_(12345)
+        one = tri_paged.attend(q, qpos, c, bt, ptab, nsplit=1)
+        for ns in (3, 16):
+            many = tri_paged.attend(q, qpos, c, bt, ptab, nsplit=ns)
+            assert torch.equal(one[0], many[0]) and torch.equal(one[1], many[1]), (R, M, ns)
+
+
 def test_gpu_pcg_matches_numpy():
     from bitexact import sampling
     from bitexact.vllm_plugin import gpu_pcg
