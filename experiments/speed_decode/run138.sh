@@ -1,6 +1,7 @@
 #!/bin/bash
 # speed_decode runs on 138. Usage:
 #   run138.sh gate TAG G1 G2 G3 G4   sampler gate: T1/T0 x max_num_seqs 1/64, 32 GSM8K prompts x G8 (parallel, one GPU each)
+#   run138.sh score ROLLOUT_STEM G   integer engine scores a rollout file, bitwise compare with its sampler log p
 #   run138.sh speed TAG G            ms/step and tok/s at B = 1 and 64 (median of 3), sequential on one GPU
 # Every GPU must show 0 MiB. Outputs: $O/TAG_{t1,t0}_ms{1,64}.json, $O/TAG_speed_B{1,64}.json
 . $HOME/speed_decode/env138.sh; cd $P
@@ -20,4 +21,8 @@ gate)
 speed)
   export CUDA_VISIBLE_DEVICES=$1
   for B in 1 64; do $PY $X/speed.py --model $INT --data $DATA --B $B --gen 512 --out $O/${TAG}_speed_B$B.json > $O/${TAG}_speed_B$B.log 2>&1; grep SPEED $O/${TAG}_speed_B$B.log; done ;;
+score)   # integer engine scores the plugin's rollouts: TAG = rollout file stem, then bitwise compare with the sampler's log p
+  export CUDA_VISIBLE_DEVICES=$1
+  $PY $X/../rl_mismatch/bitexact_engine.py score --const $CONST --rollout $O/$TAG.json --tokenizer $DEQ --data $DATA --device cuda --bs 8 --out $O/score_$TAG.json > $O/score_$TAG.log 2>&1
+  $PY $X/compare.py $O/$TAG.json $O/score_$TAG.json --name $TAG ;;
 esac

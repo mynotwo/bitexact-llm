@@ -2,13 +2,14 @@
 bucketed shapes, compiled by the plugin itself.
 
 Why not IntLlama.logits: its epilogue (int8/segs.py Segs.post) is one torch.compile(dynamic=None) function that
-serves every GEMM of the model, so after the first size change it is recompiled with symbolic row and width. Its
-overflow flag is amax over the whole [M, N] output, a reduction to one element. Inductor picks the number of CTAs
-of such a reduction at compile time from the size *hint* of the trace, not from the run-time size: when the hint is
-at most 8192 elements (a recompile triggered by a small shape, or a kernel read back from the on-disk FX-graph cache
-that was compiled that way) it emits one CTA that loops over the whole input. The same kernel then reduces the
-lm_head output (M x 128,256 int64), 8 ms per step at M = 64 on an H100. Here the segments are compiled with
-dynamic=False for a handful of row buckets, so the hint is the real size and the reduction is split across the GPU.
+serves every GEMM of the model, so after the first size change (vLLM's warm-up and prefill steps change the row
+count) it is recompiled with symbolic row count and width. Its overflow flag is amax over the whole [M, N] output,
+a reduction to one element. In the static compile Inductor splits that reduction over many CTAs; in the symbolic
+recompile it emits a kernel with grid (1, 1, 1) that loops over all M x N elements in one CTA (experiments/
+speed_decode/rootcause.py: every recompile order and size we tried gives it, from 3 to 512 rows, so it does not
+depend on the hint size). For the lm_head output (M x 128,256 int64) that is 8 ms per step at M = 64 on an H100.
+Here the segments are compiled with dynamic=False for a few row buckets, so the reduction is split as in the
+static compile.
 
 The integers are the same: same integer ops, rows are independent, and the overflow flag is a maximum. Rows added to
 reach a bucket repeat the last real row, so they cannot raise the flag, and they are dropped from the result.

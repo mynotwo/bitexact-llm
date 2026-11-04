@@ -1,11 +1,12 @@
-"""Root cause of the single-CTA lm_head epilogue: the split-reduction decision of the shared dynamic-shape compile.
+"""Root cause of the single-CTA lm_head epilogue: the dynamic-shape recompile of the shared Segs.post.
 
 Segs.post is one torch.compile(dynamic=None) function for every GEMM epilogue (q/k/v, o, gate/up, down, lm_head). Its
-overflow flag is amax over the whole [M, N] output, a reduction to one element. Inductor decides how many CTAs share
-a reduction (RSPLIT) from the *size hint* of the shape the graph was traced with, and bakes it into the kernel. After a
-size change the dynamic-shape recompile traces with the new shape as its hint: when that shape is small
-(reduction_numel_hint <= 8192, Choices.reduction_split_factor) the kernel is compiled without a split, and the same
-kernel then runs the lm_head epilogue (M x 128,256) in one CTA.
+overflow flag is amax over the whole [M, N] output, a reduction to one element. The first (static) compile splits it
+over many CTAs. The first call with another row count or width recompiles with symbolic sizes, and that kernel has
+grid (1, 1, 1): one CTA loops over all M x N elements. Below, lm_head logits for 64 rows after several recompile
+orders (second shape from 2 to 512 rows) always take about 4 ms (8 ms inside vLLM, where the whole step runs) against
+0.09-0.3 ms for the static kernel; vllm_plugin.logits.lm_logits, with static bucketed compiles, takes 0.3 ms after the
+same sequences.
 
   python rootcause.py --const C.pt --out OUT.json
 """
@@ -65,6 +66,8 @@ def main():
         "wo512_wo2_wqkv3": [(512, "wo"), (2, "wo"), (3, "wqkv")],
         "wqkv512_wo2_wgu4": [(512, "wqkv"), (2, "wo"), (4, "wgu")],
         "wo512_wqkv2_wo3": [(512, "wo"), (2, "wqkv"), (3, "wo")],
+        "wo3_wo512": [(3, "wo"), (512, "wo")],
+        "wo3_wo512_wo4": [(3, "wo"), (512, "wo"), (4, "wo")],
     }
     for name, seq in seqs.items():
         m = fresh()
