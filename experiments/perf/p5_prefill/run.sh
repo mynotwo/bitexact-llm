@@ -17,7 +17,7 @@ sync)
   scp -q "$LOCAL/experiments/perf/p5_prefill/run.sh" $HOST:$S/ ; ssh $HOST "mkdir -p $S/p5" ; scp -q "$LOCAL/experiments/perf/p5_prefill/"{bench_prefill.py,prof_vllm.py,buckets.py} $HOST:$S/p5/ ; scp -q "$LOCAL/experiments/perf/p4_merge/"{tokens.py,bench_attn.py} $HOST:$S/ ; exit ;;
 start)
   st=${STAGES:-bench}; L=$S/go_${st// /_}_gpu${GPU:?set GPU}.log
-  ssh $HOST "STAGES='$st' GPU='$GPU' TREES='${TREES:-}' REPS='${REPS:-3}' STOCK='${STOCK:-0}' O='${O:-}' nohup bash $S/run.sh go > $L 2>&1 < /dev/null & echo started $L"; exit ;;
+  ssh $HOST "export STAGES='$st' GPU='$GPU' TREES='${TREES:-}' REPS='${REPS:-3}' STOCK='${STOCK:-0}' O='${O:-}'; R=$S/run_\$\$.sh; cp $S/run.sh \$R; nohup bash \$R go > $L 2>&1 < /dev/null & echo started $L"; exit ;;
 status)
   ssh $HOST "tail -n 3 $S/go_*.log; nvidia-smi --query-gpu=index,memory.used --format=csv,noheader | tr '\n' ' '; uptime"; exit ;;
 go) ;;
