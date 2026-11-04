@@ -22,17 +22,36 @@ from bitexact.int8.segs import Segs
 from bitexact.llama import Cache, dims
 
 
+class PagedCache:
+    """K | V of every layer in the plugin's paged limb-plane layout (tri_paged.store): int8 [B * nbl, HKV, bs, 8 HD],
+    row b owns blocks b * nbl .. (b + 1) * nbl - 1 (what tri_paged.attend reads in place)."""
+
+    def __init__(self, n_layers, B, L, device, hkv, hd, bs=16):
+        self.bs, self.nbl = bs, -(-L // bs)
+        self.c = [torch.zeros(B * self.nbl, hkv, bs, 8 * hd, dtype=torch.int8, device=device) for _ in range(n_layers)]
+        self.bt = torch.arange(B * self.nbl, device=device).view(B, self.nbl)
+
+    def write(self, layer, k, v, pos):
+        """k, v int64 [B, T, HKV, HD], positions pos [B, T]."""
+        from bitexact.vllm_plugin import tri_paged
+        B, T = pos.shape
+        slot = self.bt[torch.arange(B, device=pos.device)[:, None], pos // self.bs] * self.bs + pos % self.bs
+        tri_paged.store(self.c[layer], slot.reshape(-1), k.reshape(B * T, *k.shape[2:]), v.reshape(B * T, *v.shape[2:]))
+
+
 class IntLlama:
     """nl: activation limbs per linear input (2: |q| <= 32512). compiled: torch.compile the element-wise
     segments (same integers); None (default) = on for CUDA, off for CPU. compiled=False is the eager
-    reference: every op a separate PyTorch kernel, same integers."""
+    reference: every op a separate PyTorch kernel, same integers. fused: attention through the plugin's
+    tri_paged kernels on a paged cache (None = on for CUDA; fused=False is the bmm + softmax reference)."""
 
     FR = FR
 
-    def __init__(self, c, device, nl=2, n_layers=None, compiled=None):
+    def __init__(self, c, device, nl=2, n_layers=None, compiled=None, fused=None):
         self.dev = torch.device(device)
         if compiled is None:
             compiled = self.dev.type == "cuda"
+        self.fused = self.dev.type == "cuda" if fused is None else fused
         self.H, self.HKV, self.HD, self.D, self.FF = dims(c.get("cfg", {}))
         assert c["emb"].shape[1] == self.D, "constants config does not match the embedding width"
         self.nl = nl
@@ -55,6 +74,9 @@ class IntLlama:
         self.post_check = any(post_bound(w, m, int(f), nl) >= 1 << 38 for w, m, f in lins)
         self.sg = Segs(nl, self.dev.type == "cuda", compiled, self.post_check, (self.H, self.HKV, self.HD))
         self._w64 = {}                                      # CPU: float64 copies of the int8 weights
+        if self.fused:
+            from bitexact.vllm_plugin import tri_paged
+            self.ptab = tri_paged.weight_table(self.exp)
 
     def _fmsh(self, fm):
         return torch.tensor(fm + 8 * (self.nl - 1) - 24, device=self.dev)
@@ -93,6 +115,12 @@ class IntLlama:
         qg, k, v, flag = self.sg.qkv(y, self.cos[pos][:, :, None], self.sin[pos][:, :, None])
         self._flag(flag)
         cache.write(i, k, v, pos)
+        if self.fused:                                  # one fused causal kernel; masked keys are never read
+            from bitexact.vllm_plugin import tri_paged
+            g = H // HKV
+            qpos = pos[:, None, :].expand(B, g, T).reshape(B, g * T)
+            num, den = tri_paged.attend(qg.view(B, HKV, g * T, HD), qpos, cache.c[i], cache.bt, self.ptab)
+            return self._linear(self.sg.attn_out(num, den, T), ly["wo"], x)
         K, V = cache.k[i][:, :, :S], cache.v[i][:, :, :S]
         g = H // HKV
         raw = bmm(qg, K.transpose(-1, -2).reshape(B * HKV, HD, S)).view(B, HKV, g * T, S)   # q.k at 2 FQ
@@ -129,6 +157,8 @@ class IntLlama:
         return self.norm_linear(x, self.gf, self.lm)
 
     def new_cache(self, B, L):
+        if self.fused:
+            return PagedCache(self.L, B, L, self.dev, self.HKV, self.HD)
         return Cache(self.L, B, L, self.dev, self.HKV, self.HD)
 
     def check(self):

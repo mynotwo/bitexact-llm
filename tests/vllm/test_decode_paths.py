@@ -24,7 +24,7 @@ def _run(use_graph):
     from bitexact.llama import Cache
     from bitexact.vllm_plugin import paged, tri_paged
     from bitexact.vllm_plugin.graph import decode_forward
-    m = IntLlama(torch.load(CONST, map_location="cpu", weights_only=False), "cuda", nl=2, compiled=True)
+    m = IntLlama(torch.load(CONST, map_location="cpu", weights_only=False), "cuda", nl=2, compiled=True, fused=False)
     m.ptab = tri_paged.weight_table(m.exp)
     dev, bs, R, steps = m.dev, 16, 2, 6
     lens = [37, 150]
