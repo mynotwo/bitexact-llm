@@ -76,9 +76,9 @@ class BitExactLlamaForCausalLM(nn.Module):
         log = os.environ.get("BITEXACT_HASH_LOG")
         self.plan_log = log and log[:-len(".hash")] + ".plan"    # batch layout per forward (plan_stats.py)
         del c
-        # Attention layers only to get vLLM's KV cache: 8 KV heads x 128 bf16 = 8 x 64 int32 (K | V).
+        # Attention layers only to get vLLM's KV cache: 8 KV heads x 96 bf16 = 8 x 384 int8 (3 limbs of K | 3 limbs of V).
         self.attn = nn.ModuleList([
-            Attention(num_heads=8, head_size=128, scale=1.0, num_kv_heads=8,
+            Attention(num_heads=8, head_size=paged.KVH, scale=1.0, num_kv_heads=8,
                       cache_config=vllm_config.cache_config, prefix=f"model.layers.{i}.self_attn.attn")
             for i in range(self.m.L)])
         self.layer0 = "model.layers.0.self_attn.attn"

@@ -45,6 +45,11 @@ def _limb_dot(a0, a1, a2, rb):
     b0, rb = _split(rb)
     b1, rb = _split(rb)
     b2, rb = _split(rb)
+    return _limb_dot3(a0, a1, a2, b0, b1, b2)
+
+
+@triton.jit
+def _limb_dot3(a0, a1, a2, b0, b1, b2):
     c0 = tl.dot(a0, b0, out_dtype=tl.int32)
     c1 = tl.dot(a1, b0, out_dtype=tl.int32) + tl.dot(a0, b1, out_dtype=tl.int32)
     c2 = tl.dot(a2, b0, out_dtype=tl.int32) + tl.dot(a1, b1, out_dtype=tl.int32) + \
@@ -61,6 +66,11 @@ def _limb_parts(a0, a1, a2, rb):
     b0, rb = _split(rb)
     b1, rb = _split(rb)
     b2, rb = _split(rb)
+    return _limb_parts3(a0, a1, a2, b0, b1, b2)
+
+
+@triton.jit
+def _limb_parts3(a0, a1, a2, b0, b1, b2):
     c0 = tl.dot(a0, b0, out_dtype=tl.int32)
     c1 = tl.dot(a1, b0, out_dtype=tl.int32) + tl.dot(a0, b1, out_dtype=tl.int32)
     c2 = tl.dot(a2, b0, out_dtype=tl.int32) + tl.dot(a1, b1, out_dtype=tl.int32) + \
@@ -100,13 +110,19 @@ def _tile(q_ptr, qpos_ptr, bt_ptr, M, sqz, sqm, spz, sbt, NSPLIT,
 
 
 @triton.jit
-def _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS: tl.constexpr, BN: tl.constexpr):
+def _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS: tl.constexpr, BN: tl.constexpr,
+            DH: tl.constexpr, LIMB: tl.constexpr):
     ks = k0 + tl.arange(0, BN)
     kok = ks < hi
     blk = tl.load(bt_ptr + ks // BS, mask=kok, other=0).to(tl.int64)
     off = blk * sc_nb + (ks % BS) * sc_bs
-    kt = tl.load(cbase + off[None, :] + rd[:, None], mask=kok[None, :], other=0)           # [DH, BN]
-    raw = _limb_dot(a0, a1, a2, kt)
+    if LIMB:        # K stored as 3 int8 limb planes [3, DH]: no split, 3 bytes per value
+        kp = cbase + off[None, :] + rd[:, None]
+        raw = _limb_dot3(a0, a1, a2, tl.load(kp, mask=kok[None, :], other=0),
+                         tl.load(kp + DH, mask=kok[None, :], other=0), tl.load(kp + 2 * DH, mask=kok[None, :], other=0))
+    else:
+        kt = tl.load(cbase + off[None, :] + rd[:, None], mask=kok[None, :], other=0)           # [DH, BN]
+        raw = _limb_dot(a0, a1, a2, kt)
     valid = (ks[None, :] <= qpos[:, None]) & kok[None, :]
     return raw, valid, off, kok
 
@@ -115,13 +131,13 @@ def _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS: tl.co
 def _max_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, mx_ptr, M, NSPLIT,
                 sqz, sqm, spz, sc_nb, sc_h, sc_bs, sbt,
                 BS: tl.constexpr, NHKV: tl.constexpr, DH: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr,
-                SPLIT: tl.constexpr):
+                SPLIT: tl.constexpr, LIMB: tl.constexpr):
     pz, h, rm, rd, mok, qpos, a0, a1, a2, lo, hi, bt_ptr = _tile(
         q_ptr, qpos_ptr, bt_ptr, M, sqz, sqm, spz, sbt, NSPLIT, NHKV, DH, BM, BN)
     cbase = c_ptr + h * sc_h
     mx = tl.full((BM,), NEG, dtype=tl.int64)
     for k0 in tl.range(lo, hi, BN, num_stages=1):
-        raw, valid, off, kok = _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, BN)
+        raw, valid, off, kok = _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, BN, DH, LIMB)
         mx = tl.maximum(mx, tl.max(tl.where(valid, raw, NEG), axis=1))
     if SPLIT:
         tl.atomic_max(mx_ptr + pz * M + rm, mx, mask=mok & (hi > lo))
@@ -133,7 +149,7 @@ def _max_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, mx_ptr, M, NSPLIT,
 def _acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, den_ptr, M, NSPLIT,
                 sqz, sqm, spz, sc_nb, sc_h, sc_bs, sbt, snz, snm,
                 BS: tl.constexpr, NHKV: tl.constexpr, DH: tl.constexpr, ZSH: tl.constexpr,
-                ZLO: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr, SPLIT: tl.constexpr):
+                ZLO: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr, SPLIT: tl.constexpr, LIMB: tl.constexpr):
     pz, h, rm, rd, mok, qpos, a0, a1, a2, lo, hi, bt_ptr = _tile(
         q_ptr, qpos_ptr, bt_ptr, M, sqz, sqm, spz, sbt, NSPLIT, NHKV, DH, BM, BN)
     cbase = c_ptr + h * sc_h
@@ -147,7 +163,7 @@ def _acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, den_p
     n4 = tl.zeros((BM, DH), dtype=tl.int32)
     den = tl.zeros((BM,), dtype=tl.int64)
     for k0 in tl.range(lo, hi, BN, num_stages=1):
-        raw, valid, off, kok = _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, BN)
+        raw, valid, off, kok = _scores(a0, a1, a2, cbase, bt_ptr, k0, hi, qpos, rd, sc_nb, sc_bs, BS, BN, DH, LIMB)
         z = _rsh(tl.where(valid, raw, NEG) - mx[:, None], ZSH)          # <= 0
         idx = (tl.maximum(z, ZLO - 1) - ZLO).to(tl.int32)               # table index, -1 = below table
         ok = valid & (idx >= 0)
@@ -156,8 +172,14 @@ def _acc_kernel(q_ptr, qpos_ptr, c_ptr, bt_ptr, ptab_ptr, mx_ptr, num_ptr, den_p
         p0, p = _split(p)
         p1, p = _split(p)
         p2, p = _split(p)
-        vt = tl.load(cbase + off[:, None] + DH + rd[None, :], mask=kok[:, None], other=0)  # [BN, DH]
-        c0, c1, c2, c3, c4 = _limb_parts(p0, p1, p2, vt)
+        if LIMB:
+            vp = cbase + off[:, None] + 3 * DH + rd[None, :]
+            c0, c1, c2, c3, c4 = _limb_parts3(p0, p1, p2, tl.load(vp, mask=kok[:, None], other=0),
+                                              tl.load(vp + DH, mask=kok[:, None], other=0),
+                                              tl.load(vp + 2 * DH, mask=kok[:, None], other=0))
+        else:
+            vt = tl.load(cbase + off[:, None] + DH + rd[None, :], mask=kok[:, None], other=0)  # [BN, DH]
+            c0, c1, c2, c3, c4 = _limb_parts(p0, p1, p2, vt)
         n0 += c0
         n1 += c1
         n2 += c2
@@ -226,6 +248,7 @@ def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=64, warps=4):
     if nsplit is None:
         nsplit = max(1, min(64, triton.cdiv(SM_TARGET, tiles)))
     split = nsplit > 1
+    limb = cache.dtype == torch.int8      # K | V as 3 + 3 int8 limb planes of HD each (see paged.kv_view)
     if split:           # atomics accumulate into initialised buffers
         mx = torch.full((R, HKV, M), NEG.value, dtype=torch.long, device=q.device)
         num = torch.zeros(R, HKV, M, HD, dtype=torch.long, device=q.device)
@@ -238,8 +261,8 @@ def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=64, warps=4):
     common = (q.stride(1), q.stride(2), qpos.stride(0), cache.stride(0), cache.stride(1), cache.stride(2),
               bt.stride(0))
     _max_kernel[grid](q, qpos, cache, bt, mx, M, nsplit, *common,
-                      BS=cache.shape[2], NHKV=HKV, DH=HD, BM=BM, BN=bn, SPLIT=split, num_warps=warps)
+                      BS=cache.shape[2], NHKV=HKV, DH=HD, BM=BM, BN=bn, SPLIT=split, LIMB=limb, num_warps=warps)
     _acc_kernel[grid](q, qpos, cache, bt, ptab, mx, num, den, M, nsplit, *common, num.stride(1),
                       num.stride(2), BS=cache.shape[2], NHKV=HKV, DH=HD, ZSH=2 * FQ + 3 - FA,
-                      ZLO=EXP_MIN << FA, BM=BM, BN=bn, SPLIT=split, num_warps=warps)
+                      ZLO=EXP_MIN << FA, BM=BM, BN=bn, SPLIT=split, LIMB=limb, num_warps=warps)
     return num, den
