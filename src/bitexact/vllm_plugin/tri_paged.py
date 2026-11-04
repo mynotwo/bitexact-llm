@@ -397,7 +397,9 @@ def _attend_dec(q, qpos, cache, bt, ptab, nsplit, bn, warps):
     R, _, M, _ = q.shape
     if nsplit is None:
         tiles = R * HKV
-        nsplit = max(1, min(64, DEC_PROGRAMS // tiles, bt.shape[1] * cache.shape[2] // 1024))   # >= 1024 keys per split (a split costs ~30 us: 3 launches + zero fills)     # 4 programs per SM (p3_splitkv sweep: 2 per SM left 8-30% on the table)
+        # R <= 8: as before but 4 programs per SM (base 2); R > 8: split only with >= 2048 table keys per split
+        # (a split costs ~30 us: 3 launches + zero fills, and the table is as wide as max_model_len, not the real context)
+        nsplit = max(1, min(64, DEC_PROGRAMS // tiles, (bt.shape[1] * cache.shape[2] // 2048) if R > 8 else 64))
     fused = nsplit == 1
     new = torch.empty if fused else torch.zeros
     num = new(R, HKV, M, HD, dtype=torch.long, device=q.device)
