@@ -7,6 +7,7 @@
 #   run138.sh scheck TAG G                 scorer gate, 8 configurations       run138.sh stime TAG G   scorer tok/s
 #   run138.sh gate TAG G1 G2 G3 G4         decode rollouts T=1/greedy x B=1/64  (then: gate.py BASE TAG)
 #   run138.sh dspeed TAG G                 decode ms/step, B = 1, 64 (512 tokens), 512 (256 tokens), median of 3
+#   run138.sh dcap TAG G                   cache-limited decode (B = 512 at gpu_memory_utilization GPU_MEM, default 0.2)
 #   run138.sh bench TAG G                  main's README throughput (tests/vllm/bench.py, int8 T=0/1, B 1/32/128), 3 reps
 #   AB="t1 t2 .." (or t1_t2) ROUNDS=3 run138.sh ab KIND G   same-GPU interleaved comparison: KIND = dspeed | bench | stime, one
 #                                          round = every tag once, in order; outputs as KIND with tag t_rR
@@ -54,6 +55,9 @@ dspeed) export CUDA_VISIBLE_DEVICES=$1
   for bg in "1 512" "64 512" "512 256"; do read b n <<< "$bg"
     $PY $X/speed.py --model $INT --data $DATA --B $b --gen $n --out $O/${TAG}_speed_B$b.json > $O/${TAG}_speed_B$b.log 2>&1
     grep -h SPEED $O/${TAG}_speed_B$b.log; done ;;
+dcap) export CUDA_VISIBLE_DEVICES=$1      # cache-limited decode: B = 512, 256 tokens, gpu_memory_utilization $GPU_MEM (0.2)
+  $PY $X/speed.py --model $INT --data $DATA --B 512 --gen 256 --gpu-mem ${GPU_MEM:-0.2} --out $O/${TAG}_cap${GPU_MEM:-0.2}_B512.json > $O/${TAG}_cap${GPU_MEM:-0.2}_B512.log 2>&1
+  grep -h "SPEED\|GPU KV cache size" $O/${TAG}_cap${GPU_MEM:-0.2}_B512.log | sed "s/.*SPEED/SPEED/; s/.*GPU KV/GPU KV/" | cut -c1-200 ;;
 bench) export CUDA_VISIBLE_DEVICES=$1; J=$O/${TAG}_bench.log; : > $J
   for rep in 1 2 3; do for b in 1 32 128; do for t in 0 1; do
     timeout 3000 $PY $X/inproc.py tests/vllm/bench.py --model $INT --batch $b --temp $t --tag $TAG-r$rep 2>&1 | grep '^RESULT' | tee -a $J
