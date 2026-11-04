@@ -10,8 +10,10 @@ chk "$@"
 case $MODE in
 gate)
   WL="--data $DATA --n-prompts 32 --g 8"
-  i=0; for cfg in "t1 1.0 1" "t1 1.0 64" "t0 0 1" "t0 0 64"; do set -- "$@"; read n t ms <<< "$cfg"; i=$((i+1))
-    g=${!i}; out=$O/${TAG}_${n}_ms$ms.json
+  # one GPU per config, in the order t1/ms1, t1/ms64, t0/ms1, t0/ms64; CFGS="1 2" runs only those, GPUs given in that order
+  i=0; j=0; for cfg in "t1 1.0 1" "t1 1.0 64" "t0 0 1" "t0 0 64"; do read n t ms <<< "$cfg"; i=$((i+1))
+    case " ${CFGS:-1 2 3 4} " in *" $i "*) ;; *) continue;; esac
+    j=$((j+1)); g=${!j}; out=$O/${TAG}_${n}_ms$ms.json
     CUDA_VISIBLE_DEVICES=$g $PY $X/sample.py --engine bitexact --model $INT $WL --temp $t --max-seqs $ms --out $out > $out.log 2>&1 &
   done; wait; ls $O/${TAG}_*_ms*.json ;;
 speed)

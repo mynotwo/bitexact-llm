@@ -7,7 +7,7 @@ size change the dynamic-shape recompile traces with the new shape as its hint: w
 (reduction_numel_hint <= 8192, Choices.reduction_split_factor) the kernel is compiled without a split, and the same
 kernel then runs the lm_head epilogue (M x 128,256) in one CTA.
 
-  python rootcause.py --const C.pt --out OUT.json [--first-rows 1] [--first-width 2048]
+  python rootcause.py --const C.pt --out OUT.json
 """
 import argparse
 import json
@@ -24,41 +24,54 @@ def main():
     a = ap.parse_args()
     from bitexact.int8.model import IntLlama
     c = torch.load(a.const, map_location="cpu", weights_only=False)
-    m = IntLlama(c, "cuda", nl=2, compiled=True)
     x = torch.randint(-(1 << 20), 1 << 20, (64, 2048), device="cuda")
-    ly = m.layers[0]
+    ly = IntLlama(c, "cuda", nl=2, compiled=False).layers[0]
 
-    def tm_logits(rows, n=20):
+    def fresh():
+        return IntLlama(c, "cuda", nl=2, compiled=True)
+
+    def tm(mm, rows, n=20):
         xs = x[:rows]
-        m.logits(xs)
+        mm.logits(xs)
         torch.cuda.synchronize()
         out = []
         for _ in range(n):
             t0 = time.perf_counter()
-            m.logits(xs)
+            mm.logits(xs)
             torch.cuda.synchronize()
             out.append(time.perf_counter() - t0)
         return round(statistics.median(out) * 1e3, 3)
 
-    res = {}
-    m.norm_linear(x, ly["ga"], ly["wqkv"])                     # first compile: static [64, 3072]
-    # a second shape. Large hint (64 x 2048 = 131072 > 8192): the dynamic kernel keeps a split
-    m.norm_linear(x[:61], ly["gm"], ly["wgu"])
-    res["after_large_hint"] = tm_logits(64)
-    # lm_head after a recompile whose hint is tiny
-    m2 = IntLlama(c, "cuda", nl=2, compiled=True)
-    m2.norm_linear(x, ly["ga"], ly["wqkv"])
-    m2.norm_linear(x[:1], ly["ga"], ly["wqkv"])                # M = 1, N = 3072 -> hint 3072 <= 8192
-    xs = x[:64]
-    m2.logits(xs)
-    torch.cuda.synchronize()
-    ts = []
-    for _ in range(20):
-        t0 = time.perf_counter()
-        m2.logits(xs)
+    from bitexact.vllm_plugin.logits import lm_logits
+
+    def tm_plugin(mm, rows, n=20):
+        xs = x[:rows]
+        lm_logits(mm, xs)
         torch.cuda.synchronize()
-        ts.append(time.perf_counter() - t0)
-    res["after_small_hint"] = round(statistics.median(ts) * 1e3, 3)
+        out = []
+        for _ in range(n):
+            t0 = time.perf_counter()
+            lm_logits(mm, xs)
+            torch.cuda.synchronize()
+            out.append(time.perf_counter() - t0)
+        return round(statistics.median(out) * 1e3, 3)
+
+    big = torch.randint(-(1 << 20), 1 << 20, (512, 2048), device="cuda")
+    res = {}
+    # Segs.post is one function for every GEMM, so its shapes at the moment of each recompile decide the size hint
+    # baked into the kernel. Sequences of (rows, weight) calls, then logits for 64 rows:
+    seqs = {
+        "wo512_wqkv3": [(512, "wo"), (3, "wqkv")],
+        "wo512_wo2_wqkv3": [(512, "wo"), (2, "wo"), (3, "wqkv")],
+        "wqkv512_wo2_wgu4": [(512, "wqkv"), (2, "wo"), (4, "wgu")],
+        "wo512_wqkv2_wo3": [(512, "wo"), (2, "wqkv"), (3, "wo")],
+    }
+    for name, seq in seqs.items():
+        m = fresh()
+        for rows, w in seq:
+            m.norm_linear(big[:rows], ly["ga"], ly[w])
+        res[name + "_then_logits64_ms"] = tm(m, 64)
+        res[name + "_then_plugin_lm_logits64_ms"] = tm_plugin(m, 64)
     print(json.dumps(res), flush=True)
     json.dump(res, open(a.out, "w"), indent=1)
 

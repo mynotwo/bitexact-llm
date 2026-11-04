@@ -24,6 +24,7 @@ def main():
     ap.add_argument("--B", type=int, required=True)
     ap.add_argument("--gen", type=int, default=512)
     ap.add_argument("--gpu-mem", type=float, default=0.3)
+    ap.add_argument("--cprofile", type=int, default=0, help="print top N functions by host time of one extra generate")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
@@ -51,6 +52,15 @@ def main():
 
     run(0)
     reps = [run(1), run(2), run(3)]
+    if a.cprofile:
+        import cProfile
+        import pstats
+        pr = cProfile.Profile()
+        pr.enable()
+        run(4)
+        pr.disable()
+        pstats.Stats(pr).sort_stats("cumulative").print_stats(a.cprofile)
+        pstats.Stats(pr).sort_stats("tottime").print_stats(a.cprofile)
     row = {"B": a.B, "gen": a.gen, "tokens": reps[0][0], "sec": [round(d, 3) for _, d in reps],
            "tok_per_s_median": round(statistics.median(n / d for n, d in reps), 1),
            "ms_per_step_median": round(statistics.median(d for _, d in reps) / a.gen * 1e3, 3),
