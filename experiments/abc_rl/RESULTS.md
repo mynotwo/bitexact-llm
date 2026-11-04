@@ -198,6 +198,23 @@ Pilot (10 steps, 1 GPU each): A 10.3, A_TIS 10.0, B 21.4, C 29.8 s/step. Peak me
 reservation (gpu_memory_utilization 0.18). B_fp32's trainer runs at 4 sequences per microbatch (16 ran out of
 memory), which makes it the slowest arm. Evaluation of 500 greedy questions: integer engine ~14 s, vLLM ~2.8 s.
 
+## C_plugin (BitExact vLLM plugin sampler and rescoring)
+
+C_plugin runs C's sampling and teacher-forced rescoring in the vLLM plugin with in-place weight updates (`plug.py`, `src/bitexact/vllm_plugin/rl.py`). It is bit-identical to the standalone integer engine and takes 16.8 s/step against 28.2 for C on the same GPU (D: 14.4). Details: `experiments/perf/p5_rltrain/RESULTS.md`.
+
+| arm | s/step (median) | sample | int rescoring | trainer fwd+bwd |
+|---|---|---|---|---|
+| A | 11.1 | 5.7 | 0.0 | 5.2 |
+| C | 28.2 | 15.1 | 7.7 | 5.3 |
+| C_plugin | 16.8 | 5.8 | 5.6 | 5.2 |
+| D | 14.4 | 5.7 | 3.3 | 5.2 |
+
+Same H800 GPU, same session, 20-step pilots, median of steps 2-19, shared host.
+
+- Rollouts, sampler log p and rescoring log p equal `intq.generate` / `intq.score`: 0 differ at step 0 and after 3 weight updates; sampler vs rescoring 0 differ. A bound violation at update time raises before any weight is written.
+- GSM8K step-200 integer accuracy, 2 seeds: 0.172 and 0.132 (C: 0.177 +- 0.024, range [0.148, 0.204]). Seed 2 is below C's range and within seed noise; two seeds cannot separate them.
+- The HF bf16 backward is not bit-reproducible on this host (two C runs with identical rollouts differ in grad norm at step 0), so trajectories cannot be matched exactly.
+
 ## Deviations from the design
 
 - The integer sampler is the standalone engine, not the vLLM plugin: the plugin loads constants at start-up,
