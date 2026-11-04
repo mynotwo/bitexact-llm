@@ -36,8 +36,8 @@ C-final run: seed 1, 30 steps, flags of `runs/C_new_v2_s1` (`--int-impl new --pl
 | arm | s/step | sample | score | train (fwd + bwd) | quantize + optim |
 |---|---|---|---|---|---|
 | C-old | 30.9 | | | | |
-| C-new v2 | 17.9 | 6.66 | 5.64 | | |
+| C-new v2 | 17.9 | 6.66 | 5.64 | 5.39 | 0.23 | |
 | **C-final** | **16.2** | **5.83** | **4.87** | **5.24** | **0.23** |
 | D | 11.7 | | | | |
 
-C-final is 1.91x faster than C-old, 1.11x faster than C-new v2 and 1.38x slower than D. C-old, C-new v2 and D values are from `experiments/abc_rl_speed/RESULTS.md`; the sample/score split of C-new v2 is the median of steps 5-29 of its `steps.jsonl`. Per-step records: `results/rl_C_final_s1_steps.jsonl`.
+C-final is 1.91x faster than C-old, 1.11x faster than C-new v2 and 1.38x slower than D. C-old, C-new v2 and D values are from `experiments/abc_rl_speed/RESULTS.md`; the split of C-new v2 is the median of steps 5-29 of its `steps.jsonl`. Per-step records: `results/rl_C_final_s1_steps.jsonl`.
