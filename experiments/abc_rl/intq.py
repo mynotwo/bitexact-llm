@@ -142,8 +142,38 @@ def lse_table(device):
     return _LSE_TAB[k]
 
 
+def _lse_parts(lg, expt):
+    """(row max, sum_v e) of the log-sum-exp terms, fused into one pass over lg [n, V] by torch.compile. Pure int64
+    arithmetic, so the sum is exact in any order."""
+    mx = lg.amax(-1, keepdim=True)
+    zc = (lg - mx).clamp(min=LSE_MIN << FR)
+    zi = zc >> (FR - 12)
+    r = zc - (zi << (FR - 12))
+    i0 = zi - (LSE_MIN << 12)
+    a = expt[i0]
+    b = expt[(i0 + 1).clamp(max=expt.shape[0] - 1)]
+    e = a + rsh((b - a) * r, FR - 12)
+    return mx, e.sum(-1)
+
+
+_lse_parts_c = {}
+
+
 def int_logp(lg, tok, lnt):
-    """Integer-defined log p of `tok` [n] from int64 logits rows lg [n, V] at FR bits (T = 1).
+    """Same value as int_logp_ref (bit for bit), without the [n, V] int64 temporaries: the vocabulary part is one
+    compiled kernel pair on CUDA (eager on CPU)."""
+    expt = lse_table(lg.device)
+    f = _lse_parts
+    if lg.device.type == "cuda":
+        f = _lse_parts_c.setdefault("f", torch.compile(_lse_parts, dynamic=True))
+    mx, S = f(lg, expt)
+    lse = ln_q(S, lnt) - LSE_FE * LN2Q
+    zt = (lg.gather(1, tok[:, None]) - mx)[:, 0].clamp(min=-(1 << 36))
+    return ((zt << (FL - FR)) - lse).double() / 2.0 ** FL
+
+
+def int_logp_ref(lg, tok, lnt):
+    """Reference (eager, ~10 passes over [n, V] int64) of int_logp. Integer-defined log p of `tok` [n] from int64 logits rows lg [n, V] at FR bits (T = 1).
 
     log-sum-exp from lse_table (linear interpolation from 16 to 12 fractional bits, rounded) and the
     engine's ln table (ln_q, FL = 40 bits); the result is an integer at 2^-40 returned as float64 (exact
