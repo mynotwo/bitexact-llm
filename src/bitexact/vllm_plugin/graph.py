@@ -16,9 +16,10 @@ import os
 
 import torch
 
-from bitexact.vllm_plugin import paged
+from bitexact.vllm_plugin import paged, tri_fuse, tri_paged
 
 BUCKETS = [1, 2, 4, 8, 16, 32, 64, 128]
+FUSE = os.environ.get("BITEXACT_FUSE", "1") == "1"
 
 
 def _pre(m, ly, x, pos):
@@ -48,6 +49,8 @@ def _fns():
 
 def decode_forward(m, kvs, ids, pos, slot, bt):
     """ids, pos, slot: [B] device tensors (slot < 0 is redirected to the null block); bt [B, *]."""
+    if FUSE and paged.TRI_MLP and m.nl == 2 and m.dev.type == "cuda" and not m.post_check:
+        return _decode_fused(m, kvs, ids, pos, slot, bt)
     x = m.emb[ids].long()
     pos = pos.long()
     slot = torch.where(slot < 0, torch.zeros_like(slot), slot).long()
@@ -58,6 +61,27 @@ def decode_forward(m, kvs, ids, pos, slot, bt):
         num, den = paged.decode_store_attend(m, q, k, v, pos, kvs[i], slot, bt)
         x = post(m, ly, num, den, x)
     m._flag(x.abs().amax(1).amax() >= 1 << 42)                # = x.abs().amax(), row-parallel
+    return x
+
+
+def _decode_fused(m, kvs, ids, pos, slot, bt):
+    """decode_forward with tri_fuse's kernels between the GEMMs (about 11 kernels per layer instead of 28; same
+    integers). No torch.compile regions: the ops that were compiled are now these kernels."""
+    pos = pos.long()
+    slot = torch.where(slot < 0, torch.zeros_like(slot), slot).long()
+    qpos = pos.view(-1, 1).expand(-1, paged.G).contiguous()
+    ly = m.layers[0]
+    x, a, mant, e = tri_fuse.embed_norm(m, ids, ly["ga"])
+    for i in range(m.L):
+        ly = m.layers[i]
+        q = tri_fuse.qkv(m, m._gemm(a, ly["wqkv"][0]), ly["wqkv"], mant, e, pos, slot, paged.kv_view(kvs[i]))
+        num, den = tri_paged.attend(q, qpos, paged.kv_view(kvs[i]), bt, m.ptab)
+        a, mant, e = tri_fuse.attn_out(m, num, den)
+        x, a, mant, e = tri_fuse.add_norm(m, m._gemm(a, ly["wo"][0]), ly["wo"], mant, e, x, ly["gm"])
+        a, mant, e = tri_fuse.mlp_mid(m, ly, m._gemm(a, ly["wgu"][0]), mant, e, i)
+        nxt = m.layers[i + 1]["ga"] if i + 1 < m.L else None
+        x, a, mant, e = tri_fuse.add_norm(m, m._gemm(a, ly["wd"][0]), ly["wd"], mant, e, x, nxt)
+    tri_fuse.flag_end(m)
     return x
 
 

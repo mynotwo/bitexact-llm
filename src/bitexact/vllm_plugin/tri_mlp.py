@@ -116,7 +116,7 @@ def _h_kernel(c_ptr, m_ptr, fmsh_ptr, mant_ptr, e_ptr, lut_ptr, h_ptr, part_ptr,
 
 @triton.jit
 def _quant_kernel(h_ptr, part_ptr, q_ptr, mant_ptr, e_ptr, rmax_ptr, M, NCH,
-                  FF: tl.constexpr, CH: tl.constexpr, BLOCK: tl.constexpr, NB: tl.constexpr):
+                  FF: tl.constexpr, CH: tl.constexpr, BLOCK: tl.constexpr, NB: tl.constexpr, ATOMIC: tl.constexpr):
     row = tl.program_id(0)
     ch = tl.program_id(1)
     k = tl.arange(0, NB)
@@ -142,14 +142,19 @@ def _quant_kernel(h_ptr, part_ptr, q_ptr, mant_ptr, e_ptr, rmax_ptr, M, NCH,
         tl.store(mant_ptr + row, _rsh(as_, b))
         tl.store(e_ptr + row, sh - FRC + b)
         for j in tl.static_range(3):
-            tl.store(rmax_ptr + j * M + row, tl.max(tl.load(part_ptr + j * M * NCH + row * NCH + k, mask=kok,
-                                                            other=0), 0))
+            mj = tl.max(tl.load(part_ptr + j * M * NCH + row * NCH + k, mask=kok, other=0), 0)
+            if ATOMIC:                                       # maxima over rows of |sg|, |u| (j = 1, 2)
+                if j > 0:
+                    tl.atomic_max(rmax_ptr + (j - 1), mj)
+            else:
+                tl.store(rmax_ptr + j * M + row, mj)
 
 
-def silu_quant(c, m, fmsh, mant, e, lut, check, block=512):
+def silu_quant(c, m, fmsh, mant, e, lut, check, block=512, scr=None):
     """c = torch._int_mm(2-limb input, Wgu^T) (int32, >= 2M rows), m / fmsh / mant / e as in segs.post
     -> (a8, mant', e', flag) as segs.silu_mul(segs.post(...)) with stack_limbs (flag also covers post's
-    when check)."""
+    when check). scr (int64 [2], zeroed): the row maxima of |sg|, |u| go there as atomic maxima and no flag is
+    computed (flag None; the caller multiplies them, tri_fuse.flag_end); check must be False."""
     M, FF = mant.shape[0], c.shape[1] // 2
     dev = c.device
     nch = max(1, min(triton.cdiv(FF, block), triton.cdiv(528, max(M, 1))))
@@ -166,8 +171,11 @@ def silu_quant(c, m, fmsh, mant, e, lut, check, block=512):
     rmax = torch.empty(3, M, dtype=torch.long, device=dev)
     if M:
         _h_kernel[(M, nch)](c, m, fmsh, mant, e, lut, h, part, M, nch, FF=FF, CH=ch, BLOCK=block, num_warps=4)
-        _quant_kernel[(M, nch)](h, part, q, mant2, e2, rmax, M, nch, FF=FF, CH=ch, BLOCK=block,
-                                NB=triton.next_power_of_2(nch), num_warps=4)
+        _quant_kernel[(M, nch)](h, part, q, mant2, e2, rmax if scr is None else scr, M, nch, FF=FF, CH=ch,
+                                BLOCK=block, NB=triton.next_power_of_2(nch), ATOMIC=scr is not None, num_warps=4)
+    if scr is not None:
+        assert not check
+        return q, mant2, e2, None
     mx = rmax.amax(1) if M else torch.zeros(3, dtype=torch.long, device=dev)
     flag = mx[1] * mx[2] >= 1 << 62
     if check:
