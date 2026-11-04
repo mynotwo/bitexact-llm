@@ -1,4 +1,4 @@
-# A/B/C measurement: sampler/scorer log-prob mismatch, length, speed
+# A/B/C/D measurement: sampler/scorer log-prob mismatch, length, speed
 
 Llama-3.2-1B, H800 (GPUs 4 and 5 of host 141), vLLM 0.32.0, torch 2.13, transformers 5.19, numpy 2.3.5 on both sides.
 Design: `Obsidian Vault/Claude/2026-11-03-int-vs-float-train-infer-abc.md` (Q1 mismatch, Q2 length, Q4 speed). Inference only; no RL training here (Q3 is the other branch).
@@ -9,6 +9,7 @@ Design: `Obsidian Vault/Claude/2026-11-03-int-vs-float-train-infer-abc.md` (Q1 m
 | A | vLLM bf16 | HF bf16 / HF fp32 | BitExact int8 weights, dequantized |
 | B | BitExact vLLM plugin (integer) | HF bf16 / HF fp32 | same dequantized weights |
 | C | BitExact vLLM plugin | BitExact standalone int8 engine | int8 constants |
+| D | vLLM bf16, `VLLM_BATCH_INVARIANT=1`, TRITON_ATTN | the same vLLM engine, `prompt_logprobs` over prompt + response, different batch size and order | same dequantized weights |
 
 d = log p_scorer - log p_sampler over the sampler's tokens, r = exp(d), clip = [0.8, 1.2]. "Sequence r" uses the sum of d over the sequence (cumulative log-ratio S).
 
@@ -18,6 +19,7 @@ d = log p_scorer - log p_sampler over the sampler's tokens, r = exp(d), clip = [
   **bf16 is not exact:** only 1.4% of the 1.24e9 quantized weights are representable in bf16; 75.1% are exact in fp32, the rest round with relative error <= 6.0e-8. The checkpoint is therefore fp32. The dequantized weights differ from the original bf16 weights by at most 0.54 of a row scale s (int8 rounding plus the multiplier rounding), i.e. the checkpoint is the int8 model, not the original model.
 - Q1 workload as in `rl_mismatch`: first 128 GSM8K test questions, 2-shot prefix, G = 8, request seed 1 + 8p + g, T = 1, no top-k/top-p, <= 256 new tokens, stop at EOS. HF scoring: sdpa, teacher forcing, right-padded batches of 8, TF32 off, float32 log-softmax. Engine scoring: standalone int8 engine, float64 log-softmax of the int64 logits row (`common.int_logp`).
 - Q2 workload: prompts 0..N-1, G = 1, `ignore_eos`, fixed length 256 / 1024 / 4096 / 16384 with N = 64 / 32 / 16 / 8 sequences. The 2-shot GSM8K prompt makes the base model keep writing new Question/Answer pairs, so the long text is repeated-format math word problems, not one long chain of thought. HF batch 8 at 256, batch 1 above; engine batch 1; sequences are prefilled in 256-token chunks.
+- Arm D (vLLM batch-invariant mode, `run_d.sh`, `score_vllm.py`): vLLM 0.32.0, `VLLM_BATCH_INVARIANT=1`, bf16, `attention_backend=TRITON_ATTN`. The sampler runs with `max_num_seqs` 256 in canonical order; the scorer submits prompt + response as a prompt with `prompt_logprobs=1`, `max_tokens=1`, `max_num_seqs` 128, requests shuffled (fixed RNG), prefix caching off. Its log p are the raw-logit log-softmax at the response positions, the same quantity as the sampler's `raw_logprobs`. **The default attention backend does not work:** with `VLLM_BATCH_INVARIANT=1` vLLM picks FLASH_ATTN on H800 and decode is not batch invariant (re-sampling 32 sequences with `max_num_seqs` 8 instead of 256 reproduced only 6/32 token sequences; prefill position 0 was identical, decode positions were not; the same with `enforce_eager`). With TRITON_ATTN, re-sampling at `max_num_seqs` 8 vs 256 reproduced 32/32 sequences with identical log p (smoke set of 8 prompts x 4). The blog (vllm.ai/blog/2026-10-14-train-inference-consistency) states no flags and calls vLLM's kernels from the trainer instead of using `prompt_logprobs`; it also says the decode kernel "must be selected explicitly", which matches this finding. `max_num_seqs` 5 made the scorer crash in warm-up (Triton illegal memory access), so scorer batch sizes 8 and larger were used.
 - Q4 on one GPU (GPU 5), 3 timed reps after one untimed warm-up, median.
 - Code: `experiments/abc_measure/` (`rollout.py`, `score.py`, `analyze_len.py`, `speed_*.py`, `run_main.sh`, `run_q*_analysis.sh`, `gen_tables.py`), reusing `experiments/rl_mismatch/` (`common.py`, `analyze.py`, `bitexact_engine.py`). Raw metric/speed JSON in `results/`; raw rollouts and scores stay on 141 in `/data41/audreymao/abc_measure/out`.
 
@@ -32,6 +34,7 @@ d = log p_scorer - log p_sampler over the sampler's tokens, r = exp(d), clip = [
 | B: plugin -> HF bf16 | 215,899 | 0.0241 | 0.562 | 100.00% | 0.07% | 2.20% | 66.60% |
 | B: plugin -> HF fp32 | 215,899 | 0.00121 | 0.0495 | 100.00% | 0 | 0.08% | 0 |
 | C: plugin -> BitExact engine | 215,899 | 0 | 0 | 0 | 0 | 0 | 0 |
+| D: vLLM batch-invariant -> same engine (prompt_logprobs) | 219,624 | 0 | 0 | 0 | 0 | 0 | 0 |
 
 ### Q2 per-position bucket, mean abs d (tokens in bucket)
 
@@ -42,21 +45,25 @@ d = log p_scorer - log p_sampler over the sampler's tokens, r = exp(d), clip = [
 | 256-token gens (64 seqs), B, HF bf16 | 0.0246 |  |  |  |
 | 256-token gens (64 seqs), B, HF fp32 | 0.00127 |  |  |  |
 | 256-token gens (64 seqs), C | 0 |  |  |  |
+| 256-token gens (64 seqs), D | 0 |  |  |  |
 | 1024-token gens (32 seqs), A, HF bf16 | 0.0259 | 0.0248 |  |  |
 | 1024-token gens (32 seqs), A, HF fp32 | 0.0225 | 0.0233 |  |  |
 | 1024-token gens (32 seqs), B, HF bf16 | 0.0248 | 0.026 |  |  |
 | 1024-token gens (32 seqs), B, HF fp32 | 0.00124 | 0.00122 |  |  |
 | 1024-token gens (32 seqs), C | 0 | 0 |  |  |
+| 1024-token gens (32 seqs), D | 0 | 0 |  |  |
 | 4096-token gens (16 seqs), A, HF bf16 | 0.0258 | 0.0251 | 0.0251 |  |
 | 4096-token gens (16 seqs), A, HF fp32 | 0.0229 | 0.0237 | 0.0235 |  |
 | 4096-token gens (16 seqs), B, HF bf16 | 0.0246 | 0.0263 | 0.0253 |  |
 | 4096-token gens (16 seqs), B, HF fp32 | 0.00123 | 0.00126 | 0.00118 |  |
 | 4096-token gens (16 seqs), C | 0 | 0 | 0 |  |
+| 4096-token gens (16 seqs), D | 0 | 0 | 0 |  |
 | 16384-token gens (8 seqs), A, HF bf16 | 0.0255 | 0.0226 | 0.0229 | 0.0254 |
 | 16384-token gens (8 seqs), A, HF fp32 | 0.0234 | 0.0215 | 0.0225 | 0.0232 |
 | 16384-token gens (8 seqs), B, HF bf16 | 0.0234 | 0.026 | 0.0252 | 0.0265 |
 | 16384-token gens (8 seqs), B, HF fp32 | 0.0012 | 0.00125 | 0.00116 | 0.00135 |
 | 16384-token gens (8 seqs), C | 0 | 0 | 0 | 0 |
+| 16384-token gens (8 seqs), D | 0 | 0 | 0 | 0 |
 
 ### Q2 cumulative sequence log-ratio S_T (sum of d over first T tokens): mean abs S / mean S / fraction of sequences with exp(S) outside [0.8,1.2]
 
@@ -67,39 +74,43 @@ d = log p_scorer - log p_sampler over the sampler's tokens, r = exp(d), clip = [
 | 256 (64) | B, HF bf16 | 0.504 / -0.216 / 79.69% |  |  |  |
 | 256 (64) | B, HF fp32 | 0.03 / 0.00298 / 0 |  |  |  |
 | 256 (64) | C | 0 / 0 / 0 |  |  |  |
+| 256 (64) | D | 0 / 0 / 0 |  |  |  |
 | 1024 (32) | A, HF bf16 | 0.53 / -0.077 / 62.50% | 1.18 / -0.817 / 84.38% |  |  |
 | 1024 (32) | A, HF fp32 | 0.463 / -0.0402 / 68.75% | 0.997 / -0.682 / 87.50% |  |  |
 | 1024 (32) | B, HF bf16 | 0.512 / -0.223 / 78.12% | 1.07 / -0.768 / 84.38% |  |  |
 | 1024 (32) | B, HF fp32 | 0.0327 / 0.00358 / 0 | 0.0541 / -0.00233 / 0 |  |  |
 | 1024 (32) | C | 0 / 0 / 0 | 0 / 0 / 0 |  |  |
+| 1024 (32) | D | 0 / 0 / 0 | 0 / 0 / 0 |  |  |
 | 4096 (16) | A, HF bf16 | 0.679 / -0.0529 / 81.25% | 1.37 / -0.896 / 81.25% | 3.74 / -3.74 / 100.00% |  |
 | 4096 (16) | A, HF fp32 | 0.581 / -0.0808 / 87.50% | 1.09 / -0.697 / 87.50% | 2.72 / -2.71 / 93.75% |  |
 | 4096 (16) | B, HF bf16 | 0.44 / -0.0282 / 68.75% | 0.856 / -0.553 / 81.25% | 2.77 / -2.67 / 100.00% |  |
 | 4096 (16) | B, HF fp32 | 0.0314 / 0.00887 / 0 | 0.0517 / -0.00298 / 0 | 0.0998 / -0.0215 / 0 |  |
 | 4096 (16) | C | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |  |
+| 4096 (16) | D | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |  |
 | 16384 (8) | A, HF bf16 | 0.415 / -0.179 / 75.00% | 1.31 / -1.08 / 100.00% | 2.57 / -2.57 / 100.00% | 12.8 / -12.8 / 100.00% |
 | 16384 (8) | A, HF fp32 | 0.454 / 0.0184 / 87.50% | 0.791 / -0.432 / 100.00% | 1.16 / -1.04 / 87.50% | 7.45 / -7.45 / 100.00% |
 | 16384 (8) | B, HF bf16 | 0.404 / 0.143 / 75.00% | 0.765 / -0.298 / 62.50% | 2.37 / -2.22 / 100.00% | 10.3 / -10.3 / 100.00% |
 | 16384 (8) | B, HF fp32 | 0.0337 / -0.000347 / 0 | 0.0652 / 0.00256 / 0 | 0.0954 / -0.00238 / 0 | 0.185 / -0.0104 / 37.50% |
 | 16384 (8) | C | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| 16384 (8) | D | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
 
 ### Q4 sampler tok/s (median of 3)
 
-| gen len | batch | vLLM bf16 | BitExact plugin | ratio |
-|---|---|---|---|---|
-| 256 | 1 | 667 | 215 | 3.1x |
-| 256 | 8 | 4,996 | 1,263 | 4.0x |
-| 256 | 64 | 23,481 | 6,500 | 3.6x |
-| 4096 | 1 | 660 | 224 | 2.9x |
-| 4096 | 8 | 4,648 | 1,094 | 4.2x |
-| 4096 | 64 | 19,136 | 4,019 | 4.8x |
+| gen len | batch | vLLM bf16 (A) | BitExact plugin (B, C) | vLLM batch-invariant (D) | A / plugin | A / D |
+|---|---|---|---|---|---|---|
+| 256 | 1 | 667 | 215 | 212 | 3.1x | 3.1x |
+| 256 | 8 | 4,996 | 1,263 | 1,755 | 4.0x | 2.8x |
+| 256 | 64 | 23,481 | 6,500 | 16,358 | 3.6x | 1.4x |
+| 4096 | 1 | 660 | 224 | 171 | 2.9x | 3.9x |
+| 4096 | 8 | 4,648 | 1,094 | 1,406 | 4.2x | 3.3x |
+| 4096 | 64 | 19,136 | 4,019 | 11,843 | 4.8x | 1.6x |
 
 ### Q4 scorer tok/s (median of 3; tokens = prompt + response tokens pushed through the network)
 
-| workload | HF bf16 | HF fp32 | BitExact engine |
-|---|---|---|---|
-| 1024 GSM8K rollouts (215,899 response tokens), batch 8 | 121,576 | 17,006 | 6,501 |
-| 16 x 4096-token sequences, batch 4 | 93,833 | 12,831 | 3,552 |
+| workload | HF bf16 | HF fp32 | BitExact engine (C) | vLLM batch-invariant, prompt_logprobs (D) |
+|---|---|---|---|---|
+| 1024 GSM8K rollouts (215,899 response tokens), batch 8 | 121,576 | 17,006 | 6,501 | 39,481 (max_num_seqs 8) / 45,322 (max_num_seqs 64) |
+| 16 x 4096-token sequences, batch 4 | 93,833 | 12,831 | 3,552 | 37,439 (max_num_seqs 4) |
 
 ## Findings
 

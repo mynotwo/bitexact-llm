@@ -30,6 +30,9 @@ def main():
     ap.add_argument("--dtype", default="bfloat16")
     ap.add_argument("--max-seqs", type=int, default=256)
     ap.add_argument("--gpu-mem", type=float, default=0.3)
+    ap.add_argument("--no-prefix-cache", action="store_true")
+    ap.add_argument("--attn", default=None)
+    ap.add_argument("--eager", action="store_true")
     ap.add_argument("--no-log", action="store_true", help="bitexact: skip the per-row hash/logp log (speed runs)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
@@ -49,7 +52,7 @@ def main():
     prompts = common.build_prompts(f"{a.data}/test.jsonl", f"{a.data}/train.jsonl", tok, a.n_prompts)
     reqs = [(common.seed_of(p, g), p, ids) for p, (ids, _) in enumerate(prompts) for g in range(a.g)]
     llm = LLM(model=a.model, dtype=a.dtype, max_model_len=max(len(r[2]) for r in reqs) + a.max_new + 8,
-              max_num_seqs=a.max_seqs, gpu_memory_utilization=a.gpu_mem, enable_prefix_caching=True, seed=0)
+              max_num_seqs=a.max_seqs, gpu_memory_utilization=a.gpu_mem, enable_prefix_caching=not a.no_prefix_cache, enforce_eager=a.eager, seed=0, **({"attention_backend": a.attn} if a.attn else {}))
     sp = lambda s: SamplingParams(temperature=common.TEMP, top_p=1.0, seed=s, max_tokens=a.max_new,
                                   ignore_eos=a.ignore_eos, logprobs=1 if a.engine == "bf16" else None)
     t0 = time.time()

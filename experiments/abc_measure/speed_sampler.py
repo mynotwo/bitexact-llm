@@ -26,6 +26,7 @@ def main():
     ap.add_argument("--gpu-mem", type=float, default=0.6)
     ap.add_argument("--lens", type=int, nargs="+", default=[256, 4096])
     ap.add_argument("--batches", type=int, nargs="+", default=[1, 8, 64])
+    ap.add_argument("--attn", default=None)
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
@@ -39,7 +40,8 @@ def main():
     tok = AutoTokenizer.from_pretrained(a.model)
     prompts = common.build_prompts(f"{a.data}/test.jsonl", f"{a.data}/train.jsonl", tok, 64)
     llm = LLM(model=a.model, dtype=a.dtype, max_model_len=max(a.lens) + 600, max_num_seqs=max(a.batches),
-              gpu_memory_utilization=a.gpu_mem, enable_prefix_caching=True, seed=0)
+              gpu_memory_utilization=a.gpu_mem, enable_prefix_caching=True, seed=0,
+              **({"attention_backend": a.attn} if a.attn else {}))
     res = []
     for L in a.lens:
         for B in a.batches:
