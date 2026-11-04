@@ -14,7 +14,7 @@ sync)
   ssh $HOST "mkdir -p $S && rm -rf $S/$T && mkdir -p $S/$T"
   git -C "$LOCAL" archive $BR | ssh $HOST "tar -x -C $S/$T"
   ssh $HOST "echo $(git -C "$LOCAL" rev-parse --short $BR) > $S/$T/SYNCED_COMMIT"
-  scp -q "$LOCAL/experiments/perf/p5_prefill/run.sh" $HOST:$S/ ; scp -q "$LOCAL/experiments/perf/p4_merge/"{tokens.py,bench_attn.py} $HOST:$S/ ; exit ;;
+  scp -q "$LOCAL/experiments/perf/p5_prefill/run.sh" $HOST:$S/ ; ssh $HOST "mkdir -p $S/p5" ; scp -q "$LOCAL/experiments/perf/p5_prefill/"{bench_prefill.py,prof_vllm.py,buckets.py} $HOST:$S/p5/ ; scp -q "$LOCAL/experiments/perf/p4_merge/"{tokens.py,bench_attn.py} $HOST:$S/ ; exit ;;
 start)
   st=${STAGES:-bench}; L=$S/go_${st// /_}_gpu${GPU:?set GPU}.log
   ssh $HOST "STAGES='$st' GPU='$GPU' TREES='${TREES:-}' REPS='${REPS:-3}' STOCK='${STOCK:-0}' O='${O:-}' nohup bash $S/run.sh go > $L 2>&1 < /dev/null & echo started $L"; exit ;;
@@ -53,7 +53,7 @@ run() { log=$1; to=$2; tree=$3; shift 3       # run LOG TIMEOUT_S TREE CMD...   
   [ $rc = 0 ] || grep -h "Error\|error:" $log | tail -n 3 | cut -c1-220; }
 cmp_tree() { echo "== $*" | tee -a $SUM; ( cd $S/repo && $PY tests/vllm/compare.py "$@" ) 2>&1 | tee -a $SUM; }
 hcmp() { if cmp -s $1.hash $2.hash; then echo "cmp OK $(basename $2).hash"; else echo "cmp DIFF $(basename $2).hash"; fi | tee -a $SUM; }
-EP=experiments/perf/p5_prefill
+EP=$S/p5
 
 # prefill bench: shapes B x L, per rep: plugin per tree, then vLLM stock and BI+TRITON_ATTN (bf16), 1B
 bench() { D=$O/bench; mkdir -p $D
