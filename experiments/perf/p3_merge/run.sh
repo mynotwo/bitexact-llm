@@ -95,15 +95,15 @@ tokcmp() { D=$O/tokens
 # spec on (k=4) vs off (k=0): token identity, suite once + rep/bench x B 1,32 x T 0,0.7
 spec() { D=$O/spec; mkdir -p $D; SC="$PY tests/vllm/spec_check.py --model $MODEL --eager 0"
   for k in 0 4; do run $D/suite_k$k.log 2400 repo $SC --work suite --k $k --out $D/suite_k$k; done
-  for w in rep bench; do for B in 1 32; do for T in 0 0.7; do for k in 0 4; do
-    run $D/${w}_B${B}_T${T}_k$k.log 2400 repo $SC --work $w --batch $B --temp $T --k $k --out $D/${w}_B${B}_T${T}_k$k
+  for wk in rep bench; do for B in 1 32; do for T in 0 0.7; do for k in 0 4; do
+    run $D/${wk}_B${B}_T${T}_k$k.log 2400 repo $SC --work $wk --batch $B --temp $T --k $k --out $D/${wk}_B${B}_T${T}_k$k
   done; done; done; done
   for f in $D/*_k0.json; do g=${f%_k0.json}_k4.json
     cmp -s $f $g && echo "spec $(basename ${f%_k0.json}) IDENTICAL" || echo "spec $(basename ${f%_k0.json}) DIFF"; done | tee -a $SUM; }
 
 specbench() { D=$O/specbench; mkdir -p $D; SC="$PY tests/vllm/spec_check.py --model $MODEL --eager 0 --batch 1"
-  for rep in 1 2 3; do for w in rep bench; do for T in 0 0.7; do for k in 0 4; do
-    run $D/${w}_T${T}_k${k}_r$rep.log 2400 repo $SC --work $w --temp $T --k $k --out $D/${w}_T${T}_k${k}_r$rep
+  for rep in 1 2 3; do for wk in rep bench; do for T in 0 0.7; do for k in 0 4; do
+    run $D/${wk}_T${T}_k${k}_r$rep.log 2400 repo $SC --work $wk --temp $T --k $k --out $D/${wk}_T${T}_k${k}_r$rep
   done; done; done; done
   grep -H "^RESULT" $D/*.log | cut -c1-300 | tee -a $SUM; }
 
