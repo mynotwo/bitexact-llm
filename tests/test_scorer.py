@@ -1,5 +1,6 @@
 """The packed scorer (int8/scorer.py) gives, for every response token, the same log p bits as the eager padded
-reference, for any batch composition and order, and on CPU."""
+reference on the same device, for any batch composition and order. The integer logits (row hashes) are equal across
+devices (CPU float64 flow vs GPU); the float64 log p computed from them may differ in the last bits."""
 
 import random
 
@@ -65,3 +66,44 @@ def test_cpu_scorer_is_reference_flow(int8_const):
     res = Scorer(m).score(seqs, want_hash=True)
     for (lp, hs), (p, r) in zip(res, seqs):
         assert len(lp) == len(hs) == len(r)
+        one = score_padded(m, [(p, r)], want_hash=True)[0]              # the sequence alone: no padding, no batch
+        assert hs == one[1] and np.array_equal(lp.view(np.int64), one[0].view(np.int64))
+    if CUDA:                                                           # same integer logits on the GPU
+        gpu = Scorer(IntLlama(int8_const, "cuda")).score(seqs, want_hash=True)
+        for (lp, hs), (lg, hg) in zip(res, gpu):
+            assert hs == hg
+            assert np.abs(lp - lg).max() < 1e-9                        # float64 log-softmax: last bits only
+
+
+@torch.no_grad()
+def test_scorer_empty_prompt_raises_and_empty_responses(int8_const):
+    m = IntLlama(int8_const, "cpu")
+    sc = Scorer(m)
+    with pytest.raises(ValueError, match="empty prompt"):
+        sc.score([([1, 2], [3]), ([], [4])])
+    with pytest.raises(ValueError, match="empty prompt"):
+        score_padded(m, [([], [4])])
+    out = sc.score([([128000, 5], []), ([128000], [])], want_hash=True)           # all responses empty
+    assert [len(lp) for lp, _ in out] == [0, 0] and [h for _, h in out] == [[], []]
+    assert [len(lp) for lp, _ in sc.score([([128000, 5], []), ([128000], [])])] == [0, 0]
+    assert sc.score([]) == []
+    mixed = sc.score([([128000, 5, 6], [7, 8]), ([128000], []), ([128000], [9])])  # empty response between others
+    assert [len(lp) for lp, _ in mixed] == [2, 0, 1]
+
+
+@pytest.mark.skipif(not CUDA, reason="needs CUDA")
+@torch.no_grad()
+def test_packed_scorer_short_sequences(int8_const):
+    """1-token prompt, 1-token response, empty response (alone and among others) equal the eager reference."""
+    ref_m = IntLlama(int8_const, "cuda", compiled=False, fused=False)
+    m = IntLlama(int8_const, "cuda")
+    cases = [([128000], [11]), ([128000, 7], [12]), ([128000], [13, 14, 15]), ([128000, 3, 4], []),
+             ([128000], [])]
+    sc = Scorer(m)
+    for batch in (cases, cases[:1], cases[3:4] + cases[:1], cases[::-1]):
+        got = sc.score(batch, want_hash=True)
+        assert [len(lp) for lp, _ in got] == [len(r) for _, r in batch]
+        for (lp, hs), (p, r) in zip(got, batch):
+            if r:
+                one = score_padded(ref_m, [(p, r)], want_hash=True)[0]
+                assert np.array_equal(lp.view(np.int64), one[0].view(np.int64)) and hs == one[1]

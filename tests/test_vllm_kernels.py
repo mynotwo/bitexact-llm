@@ -65,3 +65,67 @@ def test_gpu_pcg_matches_numpy():
     keys += [(0, 0), (1, 0), (2**32 - 1, 7), (12, 47)]
     got = gpu_pcg.raw_rows(keys, "cuda").cpu()
     assert torch.equal(got, sampling.raw_rows(keys))
+
+
+def test_attend_key_limit_is_a_clear_error():
+    from bitexact.int8.consts import exp_table
+    from bitexact.vllm_plugin import tri_paged
+    ptab = tri_paged.weight_table(exp_table().cuda())
+    c = torch.zeros(4, 8, 16, 128, dtype=torch.int32, device="cuda")
+    q = torch.zeros(1, 8, 1, 64, dtype=torch.long, device="cuda")
+    qpos = torch.zeros(1, 1, dtype=torch.long, device="cuda")
+    bt = torch.zeros(1, tri_paged.MAX_KEYS // 16 + 1, dtype=torch.int32, device="cuda")    # spans >= MAX_KEYS keys
+    with pytest.raises(ValueError, match="keys"):
+        tri_paged.attend(q, qpos, c, bt, ptab)
+
+
+def _nosplit_setup(seed=3, R=2, M=300):
+    from bitexact.int8.consts import exp_table
+    from bitexact.vllm_plugin import tri_paged
+    g = torch.Generator(device="cuda").manual_seed(seed)
+    ptab = tri_paged.weight_table(exp_table().cuda())
+    nb, bs, HKV, HD = 64, 16, 8, 64
+    c = torch.randint(-(1 << 14), 1 << 14, (nb, HKV, bs, 2 * HD), device="cuda", generator=g).to(torch.int32)
+    bt = torch.randint(1, nb, (R, 40), device="cuda", generator=g).to(torch.int32)
+    qpos = torch.randint(0, 500, (R, M), device="cuda", generator=g)
+    q = lambda: torch.randint(-(1 << 14), 1 << 14, (R, HKV, M, HD), device="cuda", generator=g)
+    return tri_paged, ptab, c, bt, qpos, q
+
+
+def test_attend_nosplit_scratch_two_streams():
+    """The row-max scratch is per stream: attend calls running concurrently on two streams do not share it."""
+    tri_paged, ptab, c, bt, qpos, mkq = _nosplit_setup()
+    qs = [mkq() for _ in range(8)]
+    ref = [tri_paged.attend(q, qpos, c, bt, ptab, nsplit=3) for q in qs]
+    s1, s2 = torch.cuda.Stream(), torch.cuda.Stream()
+    torch.cuda.synchronize()
+    for _ in range(3):
+        out = []
+        for i, q in enumerate(qs):
+            with torch.cuda.stream(s1 if i % 2 == 0 else s2):
+                out.append(tri_paged.attend(q, qpos, c, bt, ptab, nsplit=1))
+        torch.cuda.synchronize()
+        for (n, d), (rn, rd) in zip(out, ref):
+            assert torch.equal(n, rn) and torch.equal(d, rd)
+    keys = {k for k in tri_paged._SCR if k[0] == qs[0].device}
+    assert len({k[1] for k in keys}) >= 2
+
+
+def test_attend_nosplit_cuda_graph_replay():
+    """attend(nsplit=1) captured in a CUDA graph (fresh scratch owned by the graph) and replayed with new inputs,
+    with eager calls that dirty the shared scratch in between."""
+    tri_paged, ptab, c, bt, qpos, mkq = _nosplit_setup(seed=4)
+    q = mkq()
+    tri_paged.attend(q, qpos, c, bt, ptab, nsplit=1)                      # compile / warm up outside the capture
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        num, den = tri_paged.attend(q, qpos, c, bt, ptab, nsplit=1)
+    for _ in range(3):
+        q.copy_(mkq())
+        tri_paged._scratch(1 << 20, q.device).fill_(777)
+        other = tri_paged.attend(mkq(), qpos, c, bt, ptab, nsplit=1)      # eager call on the shared scratch
+        graph.replay()
+        rn, rd = tri_paged.attend(q, qpos, c, bt, ptab, nsplit=3)
+        assert torch.equal(num, rn) and torch.equal(den, rd)
+        del other

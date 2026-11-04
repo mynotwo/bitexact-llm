@@ -1,0 +1,458 @@
+[
+ {
+  "name": "qkv",
+  "M": 24,
+  "N": 3072,
+  "K": 2048,
+  "intmm_us": 13.085999991744757,
+  "intmm_tops": 23.077326011807195,
+  "n_algos": 8,
+  "lt_best_us": 11.152773722645968,
+  "lt_best_tops": 27.077558956190643,
+  "lt_best_idx": 0,
+  "lt_equal": true,
+  "lt_kernel": [
+   "sm90_xmma_gemm_i8i32_i8i32_i32_tn_n_tilesize64x64x128_warpgroupsize1x1x1_execute_segment_k_off_kernel__5x_cublas"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "qkv",
+  "M": 128,
+  "N": 3072,
+  "K": 2048,
+  "intmm_us": 12.205046169961301,
+  "intmm_tops": 131.96285483655052,
+  "n_algos": 8,
+  "lt_best_us": 11.47551514793921,
+  "lt_best_tops": 140.3521075295026,
+  "lt_best_idx": 0,
+  "lt_equal": true,
+  "lt_kernel": [
+   "sm90_xmma_gemm_i8i32_i8i32_i32_tn_n_tilesize64x64x128_warpgroupsize1x1x1_execute_segment_k_off_kernel__5x_cublas"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "qkv",
+  "M": 1024,
+  "N": 3072,
+  "K": 2048,
+  "intmm_us": 25.715157463981413,
+  "intmm_tops": 501.06253115686985,
+  "n_algos": 8,
+  "lt_best_us": 21.62818411154727,
+  "lt_best_tops": 595.745894410098,
+  "lt_best_idx": 3,
+  "lt_equal": true,
+  "lt_kernel": [
+   "sm90_xmma_gemm_i8i32_i8i32_i32_tn_n_tilesize256x128x64_warpgroupsize2x1x1_execute_segment_k_off_kernel__5x_cublas"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "qkv",
+  "M": 4096,
+  "N": 3072,
+  "K": 2048,
+  "intmm_us": 81.79772193759483,
+  "intmm_tops": 630.0860993576403,
+  "n_algos": 8,
+  "lt_best_us": 45.247012821138675,
+  "lt_best_tops": 1139.07204782194,
+  "lt_best_idx": 0,
+  "lt_equal": true,
+  "lt_kernel": [
+   "Memset (Device)"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "qkv",
+  "M": 16384,
+  "N": 3072,
+  "K": 2048,
+  "intmm_us": 302.5642164455828,
+  "intmm_tops": 681.3708264310836,
+  "n_algos": 8,
+  "lt_best_us": 160.96273036364695,
+  "lt_best_tops": 1280.7836307339405,
+  "lt_best_idx": 0,
+  "lt_equal": true,
+  "lt_kernel": [
+   "Memset (Device)"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "o",
+  "M": 24,
+  "N": 2048,
+  "K": 2048,
+  "intmm_us": 11.707700585192088,
+  "intmm_tops": 17.1960830852335,
+  "n_algos": 8,
+  "lt_best_us": 10.909303349585791,
+  "lt_best_tops": 18.454578220858075,
+  "lt_best_idx": 0,
+  "lt_equal": true,
+  "lt_kernel": [
+   "sm90_xmma_gemm_i8i32_i8i32_i32_tn_n_tilesize64x64x128_warpgroupsize1x1x1_execute_segment_k_off_kernel__5x_cublas"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "o",
+  "M": 128,
+  "N": 2048,
+  "K": 2048,
+  "intmm_us": 12.077837835450776,
+  "intmm_tops": 88.90182486540442,
+  "n_algos": 8,
+  "lt_best_us": 10.8299548527632,
+  "lt_best_tops": 99.14554941344386,
+  "lt_best_idx": 0,
+  "lt_equal": true,
+  "lt_kernel": [
+   "sm90_xmma_gemm_i8i32_i8i32_i32_tn_n_tilesize64x64x128_warpgroupsize1x1x1_execute_segment_k_off_kernel__5x_cublas"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "o",
+  "M": 1024,
+  "N": 2048,
+  "K": 2048,
+  "intmm_us": 20.15787114441519,
+  "intmm_tops": 426.13302418990173,
+  "n_algos": 8,
+  "lt_best_us": 17.211437704093964,
+  "lt_best_tops": 499.0829203046049,
+  "lt_best_idx": 3,
+  "lt_equal": true,
+  "lt_kernel": [
+   "sm90_xmma_gemm_i8i32_i8i32_i32_tn_n_tilesize64x128x128_warpgroupsize1x1x1_execute_segment_k_off_kernel__5x_cublas"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "o",
+  "M": 4096,
+  "N": 2048,
+  "K": 2048,
+  "intmm_us": 56.105142787975424,
+  "intmm_tops": 612.4169133273119,
+  "n_algos": 8,
+  "lt_best_us": 35.81729525079329,
+  "lt_best_tops": 959.3057802777273,
+  "lt_best_idx": 0,
+  "lt_equal": true,
+  "lt_kernel": [
+   "Memset (Device)"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "o",
+  "M": 16384,
+  "N": 2048,
+  "K": 2048,
+  "intmm_us": 208.14753505726193,
+  "intmm_tops": 660.2958494521215,
+  "n_algos": 8,
+  "lt_best_us": 108.72882142832978,
+  "lt_best_tops": 1264.0526372540046,
+  "lt_best_idx": 0,
+  "lt_equal": true,
+  "lt_kernel": [
+   "Memset (Device)"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "gate_up",
+  "M": 24,
+  "N": 16384,
+  "K": 2048,
+  "intmm_us": 22.62023531933542,
+  "intmm_tops": 71.20229799834459,
+  "n_algos": 8,
+  "lt_best_us": 22.5570186640967,
+  "lt_best_tops": 71.40184436534435,
+  "lt_best_idx": 7,
+  "lt_equal": true,
+  "lt_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16::Params)"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "gate_up",
+  "M": 128,
+  "N": 16384,
+  "K": 2048,
+  "intmm_us": 26.48743856371495,
+  "intmm_tops": 324.302199751671,
+  "n_algos": 8,
+  "lt_best_us": 24.784511705832696,
+  "lt_best_tops": 346.5847822201991,
+  "lt_best_idx": 2,
+  "lt_equal": true,
+  "lt_kernel": [
+   "sm90_xmma_gemm_i8i32_i8i32_i32_tn_n_tilesize64x128x128_warpgroupsize1x1x1_execute_segment_k_off_kernel__5x_cublas"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "gate_up",
+  "M": 1024,
+  "N": 16384,
+  "K": 2048,
+  "intmm_us": 107.635249151809,
+  "intmm_tops": 638.4476951326409,
+  "n_algos": 8,
+  "lt_best_us": 64.11852187250366,
+  "lt_best_tops": 1071.7570325879485,
+  "lt_best_idx": 0,
+  "lt_equal": true,
+  "lt_kernel": [
+   "Memset (Device)"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "gate_up",
+  "M": 4096,
+  "N": 16384,
+  "K": 2048,
+  "intmm_us": 406.123183595324,
+  "intmm_tops": 676.833822956284,
+  "n_algos": 8,
+  "lt_best_us": 206.96036748845,
+  "lt_best_tops": 1328.1668866351442,
+  "lt_best_idx": 0,
+  "lt_equal": true,
+  "lt_kernel": [
+   "Memset (Device)"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "gate_up",
+  "M": 16384,
+  "N": 16384,
+  "K": 2048,
+  "intmm_us": 1751.919402016534,
+  "intmm_tops": 627.6040019366275,
+  "n_algos": 8,
+  "lt_best_us": 955.8860001464685,
+  "lt_best_tops": 1150.2539294513404,
+  "lt_best_idx": 0,
+  "lt_equal": true,
+  "lt_kernel": [
+   "Memset (Device)"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "down",
+  "M": 24,
+  "N": 2048,
+  "K": 8192,
+  "intmm_us": 27.025165558519216,
+  "intmm_tops": 29.798387960148542,
+  "n_algos": 8,
+  "lt_best_us": 17.41549201191418,
+  "lt_best_tops": 46.24080487930394,
+  "lt_best_idx": 4,
+  "lt_equal": true,
+  "lt_kernel": [
+   "sm90_xmma_gemm_i8i32_i8i32_i32_tn_n_tilesize64x64x128_warpgroupsize1x1x1_execute_segment_k_off_kernel__5x_cublas"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "down",
+  "M": 128,
+  "N": 2048,
+  "K": 8192,
+  "intmm_us": 24.577842191306512,
+  "intmm_tops": 174.7495676214889,
+  "n_algos": 8,
+  "lt_best_us": 17.85155735775019,
+  "lt_best_tops": 240.59342330350555,
+  "lt_best_idx": 2,
+  "lt_equal": true,
+  "lt_kernel": [
+   "sm90_xmma_gemm_i8i32_i8i32_i32_tn_n_tilesize64x64x128_warpgroupsize1x1x1_execute_segment_k_off_kernel__5x_cublas"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_64x64_128x6_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "down",
+  "M": 1024,
+  "N": 2048,
+  "K": 8192,
+  "intmm_us": 44.67794398656328,
+  "intmm_tops": 769.0537052988284,
+  "n_algos": 8,
+  "lt_best_us": 36.047508125468624,
+  "lt_best_tops": 953.179294624358,
+  "lt_best_idx": 3,
+  "lt_equal": true,
+  "lt_kernel": [
+   "sm90_xmma_gemm_i8i32_i8i32_i32_tn_n_tilesize64x256x128_warpgroupsize1x1x1_execute_segment_k_off_kernel__5x_cublas"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x128_128x5_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x128_128x5_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "down",
+  "M": 4096,
+  "N": 2048,
+  "K": 8192,
+  "intmm_us": 151.92649042550124,
+  "intmm_tops": 904.6411398504242,
+  "n_algos": 8,
+  "lt_best_us": 99.61938684004066,
+  "lt_best_tops": 1379.6406285122634,
+  "lt_best_idx": 2,
+  "lt_equal": true,
+  "lt_kernel": [
+   "sm90_xmma_gemm_i8i32_i8i32_i32_tn_n_tilesize128x256x64_warpgroupsize2x1x1_execute_segment_k_off_kernel__5x_cublas"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x256_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x256_128x3_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "down",
+  "M": 16384,
+  "N": 2048,
+  "K": 8192,
+  "intmm_us": 587.590397198995,
+  "intmm_tops": 935.6106166960012,
+  "n_algos": 8,
+  "lt_best_us": 386.804756817517,
+  "lt_best_tops": 1421.2746978894018,
+  "lt_best_idx": 0,
+  "lt_equal": true,
+  "lt_kernel": [
+   "Memset (Device)"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x256_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x256_128x3_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "lm_head",
+  "M": 24,
+  "N": 128256,
+  "K": 2048,
+  "intmm_us": 109.60996110383638,
+  "intmm_tops": 115.02675210381689,
+  "n_algos": 8,
+  "lt_best_us": 119.17393531409962,
+  "lt_best_tops": 105.79559859938871,
+  "lt_best_idx": 3,
+  "lt_equal": true,
+  "lt_kernel": [
+   "Memset (Device)"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "lm_head",
+  "M": 128,
+  "N": 128256,
+  "K": 2048,
+  "intmm_us": 135.0834587645843,
+  "intmm_tops": 497.7891619223889,
+  "n_algos": 8,
+  "lt_best_us": 124.45262776426047,
+  "lt_best_tops": 540.3106622655857,
+  "lt_best_idx": 0,
+  "lt_equal": true,
+  "lt_kernel": [
+   "Memset (Device)"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "lm_head",
+  "M": 1024,
+  "N": 128256,
+  "K": 2048,
+  "intmm_us": 803.6651015281677,
+  "intmm_tops": 669.3642075549868,
+  "n_algos": 8,
+  "lt_best_us": 440.00522488234,
+  "lt_best_tops": 1222.5869680703215,
+  "lt_best_idx": 0,
+  "lt_equal": true,
+  "lt_kernel": [
+   "Memset (Device)"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16::Params)"
+  ]
+ },
+ {
+  "name": "lm_head",
+  "M": 4096,
+  "N": 128256,
+  "K": 2048,
+  "intmm_us": 3561.420293954702,
+  "intmm_tops": 604.191147826196,
+  "n_algos": 8,
+  "lt_best_us": 1766.1760017789643,
+  "lt_best_tops": 1218.3262671039813,
+  "lt_best_idx": 0,
+  "lt_equal": true,
+  "lt_kernel": [
+   "Memset (Device)"
+  ],
+  "intmm_kernel": [
+   "void cutlass::Kernel2<cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16>(cutlass_80_tensorop_i16832gemm_s8_128x64_128x3_tn_align16::Params)"
+  ]
+ }
+]

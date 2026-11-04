@@ -81,7 +81,9 @@ class IntSampler(LogitsProcessor):
         self.temp = [(0, 1)] * n
         self.lnt = None
         self.log = os.environ.get("BITEXACT_HASH_LOG")
-        self.host_rows = os.environ.get("BITEXACT_HOST_ROWS", "1") == "1"
+        # seq_lens_upper_bound is exact only without speculative decoding: with it, always take the device path
+        self.host_rows = os.environ.get("BITEXACT_HOST_ROWS", "1") == "1" and \
+            getattr(vllm_config, "speculative_config", None) is None
         # tests: compare the host-side rows and positions with the device ones
         self.verify_host = os.environ.get("BITEXACT_VERIFY_HOST_ROWS") == "1"
 

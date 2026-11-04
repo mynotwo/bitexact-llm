@@ -15,7 +15,9 @@ The whole host-side layout (ids, positions, cache slots, tile gather / scatter i
 batch and uploaded in one copy, and no step reads a device value on the host, so a chunk is a fixed sequence of kernel
 launches (the only syncs are the final copy and the overflow-flag check).
 
-On CPU score() runs the padded reference flow (float64 GEMM), which gives the same integers.
+On CPU score() runs the padded reference flow (float64 GEMM), which gives the same integer logits (bit for bit,
+the row hashes are equal). The log p are computed from them in float64 on the device in use, so a CPU and a GPU
+log p may differ in the last bits (about 1e-13); on one device they are bit-equal for any batch composition.
 """
 
 import hashlib
@@ -43,6 +45,7 @@ def logp_rows(lg, tgt):
 
 def score_padded(m, batch, chunk=256, want_hash=False):
     """Reference flow: right-padded batch, prefill in position chunks, lm_head + log-softmax per response chunk."""
+    _check_prompts(batch)
     seqs = [p + r for p, r in batch]
     L = max(map(len, seqs))
     ids = torch.full((len(seqs), L), PAD, dtype=torch.long)
@@ -61,9 +64,16 @@ def score_padded(m, batch, chunk=256, want_hash=False):
             lg = m.logits(h[j, len(p) - 1 + c0:len(p) - 1 + c1])
             hs += sha_rows(lg) if want_hash else []
             lps.append(logp_rows(lg, torch.tensor(r[c0:c1], device=lg.device)))
-        out.append((torch.cat(lps).cpu().numpy(), hs if want_hash else None))
+        out.append((torch.cat(lps).cpu().numpy() if lps else np.empty(0), hs if want_hash else None))
     m.check()
     return out
+
+
+def _check_prompts(batch):
+    """The log p of the first response token is read at the last prompt token: a prompt needs one."""
+    for i, (p, _) in enumerate(batch):
+        if len(p) == 0:
+            raise ValueError(f"batch[{i}]: empty prompt (the first response token has no context to be scored from)")
 
 
 def _tiles(a, b):
@@ -167,8 +177,12 @@ class Scorer:
             self.c = [torch.zeros(NB + 1, HKV, self.bs, 2 * HD, dtype=torch.int32, device=m.dev) for _ in range(m.L)]
 
     def score(self, batch, want_hash=False):
-        """batch: [(prompt ids, response ids)] -> [(log p float64 [len(response)], row hashes or None)]."""
+        """batch: [(prompt ids, response ids)] -> [(log p float64 [len(response)], row hashes or None)].
+        A prompt must have at least one token (ValueError); a response may be empty (empty result)."""
         m = self.m
+        _check_prompts(batch)
+        if not any(len(r) for _, r in batch):
+            return [(np.empty(0), [] if want_hash else None) for _ in batch]
         if m.dev.type != "cuda":
             return score_padded(m, batch, want_hash=want_hash)
         b = _Batch(batch, self.rows, self.bs)

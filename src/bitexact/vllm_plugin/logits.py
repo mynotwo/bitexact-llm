@@ -60,26 +60,23 @@ def lm_logits(m, x):
     return y[:M]
 
 
-class DeferredCheck:
-    """IntLlama.check() without the host sync. check() reads the on-device overflow flag with bool(), which blocks the
-    host until the whole step's kernels have finished, so vLLM's async scheduling cannot prepare the next step while
-    the GPU runs. Here the flag is copied to pinned memory with an event and read at the next call, so an overflow
-    raises one step later (the flag is sticky, the run is aborted either way). Nothing a token depends on changes."""
+class OverflowCheck:
+    """IntLlama.check() for the plugin, called once per compute_logits, before the step's tokens are sampled.
+
+    Default ("assert"): a device-side assert on the overflow flag is enqueued on the stream behind the step's
+    kernels and ahead of the sampler. If any bound of the step was violated the assert traps, every later kernel of
+    the stream (the sampler, the copy of the sampled tokens to the host) never runs, and the process fails with a
+    CUDA "device-side assert" error: no token of an overflowed step is ever returned, including on the last step of
+    a run, and the host never waits for the GPU (vLLM's async scheduling keeps overlapping).
+    BITEXACT_CHECK=sync: IntLlama.check(), which reads the flag with bool() and raises OverflowError; it blocks
+    the host until the step's kernels have finished (slower; the same guarantee with a Python exception)."""
 
     def __init__(self, m):
         self.m = m
-        self.on = os.environ.get("BITEXACT_DEFER_CHECK", "1") == "1"
-        self.host = torch.zeros((), dtype=torch.bool, device="cpu").pin_memory() if self.on else None
-        self.event = torch.cuda.Event() if self.on else None
-        self.pending = False
+        self.mode = os.environ.get("BITEXACT_CHECK", "assert")
+        assert self.mode in ("assert", "sync"), self.mode
 
     def __call__(self):
-        if not self.on:
+        if self.mode == "sync":
             return self.m.check()
-        if self.pending:
-            self.event.synchronize()
-            if bool(self.host):
-                raise OverflowError("integer bound violated (int8/model.py)")
-        self.host.copy_(self.m.err, non_blocking=True)
-        self.event.record()
-        self.pending = True
+        torch._assert_async(~self.m.err, "bitexact: integer bound violated (int8/model.py)")

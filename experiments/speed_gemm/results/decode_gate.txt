@@ -1,0 +1,7 @@
+PASS t1 ms1  new vs base: 256 seqs, 53387 tokens, 0 seqs differ
+PASS t1 ms64 new vs base: 256 seqs, 53387 tokens, 0 seqs differ
+PASS t1 new ms1 vs ms64: 256 seqs, 53387 tokens, 0 seqs differ
+PASS t0 ms1  new vs base: 256 seqs, 65536 tokens, 0 seqs differ
+PASS t0 ms64 new vs base: 256 seqs, 65536 tokens, 0 seqs differ
+PASS t0 new ms1 vs ms64: 256 seqs, 65536 tokens, 0 seqs differ
+GATE PASS
