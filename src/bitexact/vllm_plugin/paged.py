@@ -1,10 +1,11 @@
 """Integer attention on vLLM's paged KV cache.
 
 vLLM allocates the KV cache for each layer from the Attention layer we declare (8 KV heads, head size
-128, bf16). vLLM 0.32 hands each layer a view [blocks, heads, block_size, K|V] with K and V of one head
-side by side in the last dim (2 * 128 bf16 = 512 bytes, unit stride). Viewed as int32 that last dim is
-[K (64 int32) | V (64 int32)], exactly our integer K (FQ) and V (FV) of one KV head. So vLLM's block manager, block
-tables, slot mapping and prefix cache drive our cache unchanged.
+96, bf16). vLLM 0.32 hands each layer a view [blocks, heads, block_size, K|V] with K and V of one head
+side by side in the last dim (2 * 96 bf16 = 384 bytes, unit stride). Viewed as int8 that last dim is
+[K limbs (3 x 64) | V limbs (3 x 64)]: the integer K (FQ) and V (FV) of one KV head as three base-256 limbs each
+(they fit: |x| < 2^23). So vLLM's block manager, block tables, slot mapping and prefix cache drive our cache
+unchanged, in 3 instead of 4 bytes per value, and the attention kernel needs no limb split on load.
 
 Why the result does not depend on scheduling: the K/V row of a token is a row-local integer function
 of the token and its position (same bits whether it came from a cached prefix block, an earlier prefill
@@ -18,6 +19,8 @@ q.k and p.v read K / V in place through the block table (tri_paged.py), no gathe
 from dataclasses import dataclass
 
 import torch
+import triton
+import triton.language as tl
 
 from bitexact.int8.consts import FR
 from bitexact.int8.segs import FV
@@ -97,20 +100,45 @@ def make_plan(meta, n_tokens, positions):
                 pre=pre, pre_groups=_pre_groups(pre, positions, dev))
 
 
+KVH = 96          # declared head size (bf16 elements): 6 HD int8 = 3 limbs of K, then 3 limbs of V, per head and token
+
+
 def kv_view(kv):
-    """vLLM's bf16 cache view [nb, HKV, bs, 2 * 2 * HD] -> int32 [nb, HKV, bs, 2 * HD] (K | V)."""
-    assert kv.dim() == 4 and kv.shape[1] == HKV and kv.shape[3] == 4 * HD and kv.stride(3) == 1, \
+    """vLLM's bf16 cache view [nb, HKV, bs, 2 KVH] -> int8 [nb, HKV, bs, 6 HD]: per token and head the three
+    base-256 limbs of K (HD bytes each, limb 0 first), then the three limbs of V. K and V are integers within
+    three limbs (|x| <= 8355711), so 3 bytes hold them exactly; tri_paged feeds the limbs to the tensor
+    cores without splitting."""
+    assert kv.dim() == 4 and kv.shape[1] == HKV and kv.shape[3] == 2 * KVH and kv.stride(3) == 1, \
         (kv.shape, kv.stride())
-    return kv.view(torch.int32)
+    return kv.view(torch.int8)
+
+
+@triton.jit
+def _store_kernel(k_ptr, v_ptr, slot_ptr, c_ptr, skn, skh, svn, svh, sc_nb, sc_h, sc_bs,
+                  BS: tl.constexpr, DH: tl.constexpr):
+    n = tl.program_id(0).to(tl.int64)
+    h = tl.program_id(1).to(tl.int64)
+    slot = tl.load(slot_ptr + n)
+    if slot >= 0:
+        rd = tl.arange(0, DH)
+        dst = c_ptr + (slot // BS) * sc_nb + h * sc_h + (slot % BS) * sc_bs + rd
+        for half in tl.static_range(2):
+            if half == 0:
+                r = tl.load(k_ptr + n * skn + h * skh + rd)
+            else:
+                r = tl.load(v_ptr + n * svn + h * svh + rd)
+            for limb in tl.static_range(3):
+                lo = ((r + 128) & 255) - 128
+                tl.store(dst + (half * 3 + limb) * DH, lo.to(tl.int8))
+                r = (r - lo) >> 8
 
 
 def _store(c, slot, k, v):
-    keep = slot >= 0                                                 # dummy / padded tokens: -1
-    if not bool(keep.all()):
-        slot, k, v = slot[keep], k[keep], v[keep]
-    bs = c.shape[2]
-    blk, off = slot // bs, slot % bs
-    c[blk, :, off] = torch.cat([k, v], -1).to(torch.int32)          # [n, HKV, 2 HD]
+    """Write K / V [n, HKV, HD] int64 (3 limbs each) of the tokens at cache slots slot [n] (negative: skipped)."""
+    n = slot.shape[0]
+    if n:
+        _store_kernel[(n, HKV)](k, v, slot, c, k.stride(0), k.stride(1), v.stride(0), v.stride(1), c.stride(0),
+                                c.stride(1), c.stride(2), BS=c.shape[2], DH=HD)
 
 
 def _attend(m, q, qpos, c, bt):
@@ -156,8 +184,7 @@ def decode_store_attend(m, q, k, v, pos, kv, slot, blocks):
     Kept out of torch.compile (the cache is a dtype view and must be written in place). Padding rows: slot 0
     (vLLM's null block 0, never given to a request) and position 0."""
     c = kv_view(kv)
-    bs = c.shape[2]
-    c[slot // bs, :, slot % bs] = torch.cat([k, v], -1).to(torch.int32)
+    _store(c, slot, k, v)
     return _attend(m, q, pos.view(-1, 1).expand(-1, G), c, blocks)
 
 
