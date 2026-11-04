@@ -16,6 +16,7 @@ import os
 
 import torch
 
+from bitexact.llama import D, FF, H, HD, HKV
 from bitexact.vllm_plugin import paged, tri_fuse, tri_paged
 
 BUCKETS = [1, 2, 4, 8, 16, 32, 64, 128]
@@ -49,7 +50,10 @@ def _fns():
 
 def decode_forward(m, kvs, ids, pos, slot, bt):
     """ids, pos, slot: [B] device tensors (slot < 0 is redirected to the null block); bt [B, *]."""
-    if FUSE and paged.TRI_MLP and m.nl == 2 and m.dev.type == "cuda" and not m.post_check:
+    # tri_fuse's kernels are compiled for the Llama-3.2-1B geometry (module constants); other sizes (8B) take the
+    # unfused path
+    if (FUSE and (m.H, m.HKV, m.HD, m.D, m.FF) == (H, HKV, HD, D, FF) and paged.TRI_MLP and m.nl == 2
+            and m.dev.type == "cuda" and not m.post_check):
         return _decode_fused(m, kvs, ids, pos, slot, bt)
     x = m.emb[ids].long()
     pos = pos.long()
@@ -69,7 +73,7 @@ def _decode_fused(m, kvs, ids, pos, slot, bt):
     integers). No torch.compile regions: the ops that were compiled are now these kernels."""
     pos = pos.long()
     slot = torch.where(slot < 0, torch.zeros_like(slot), slot).long()
-    qpos = pos.view(-1, 1).expand(-1, paged.G).contiguous()
+    qpos = pos.view(-1, 1).expand(-1, m.H // m.HKV).contiguous()
     ly = m.layers[0]
     x, a, mant, e = tri_fuse.embed_norm(m, ids, ly["ga"])
     for i in range(m.L):
