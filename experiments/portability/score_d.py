@@ -72,6 +72,9 @@ def main():
                 seq_tokens=n_seq)
     common.save(a.out, "vllm_bi_score", meta, out)
     print(f"RESULT {a.out} seqs {len(items)} secs {secs} tok/s {meta['tok_per_s_median']}", flush=True)
+    import psutil  # vLLM engine-core / TP worker children would outlive os._exit and hold the GPU
+    for ch in psutil.Process().children(recursive=True):
+        ch.kill()
     os._exit(0)
 
 

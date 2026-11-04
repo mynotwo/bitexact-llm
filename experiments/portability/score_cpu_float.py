@@ -33,13 +33,14 @@ def main():
     note = None
     if a.batch_invariant:
         try:
-            from vllm.model_executor.layers import batch_invariant as bi
-            fn = getattr(bi, "init_batch_invariance", None) or getattr(bi, "enable_batch_invariant_mode")
             try:
-                fn()
-            except TypeError:
-                fn(None)
-            note = f"called {fn.__name__}"
+                from vllm.model_executor.determinism import batch_invariant as bi  # vLLM >= 0.3x
+            except ImportError:
+                from vllm.model_executor.layers import batch_invariant as bi
+            bi.init_batch_invariance()
+            from vllm.platforms import current_platform
+            note = (f"called {bi.__name__}.init_batch_invariance; platform cuda_alike={current_platform.is_cuda_alike()}"
+                    f" xpu={current_platform.is_xpu()}; aten overrides registered only for CUDA/XPU dispatch keys")
         except Exception as e:  # recorded, not fatal
             note = f"batch-invariant init failed: {type(e).__name__}: {e}"
         print(note, flush=True)

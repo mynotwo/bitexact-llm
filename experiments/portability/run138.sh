@@ -33,7 +33,7 @@ tp)
   done
   csamp $PY C_t1_tp2 --tp 2 ;;                                  # plugin under TP (expected unsupported)
 ver)
-  for v in 0.31.0 0.33.0; do
+  for v in ${VERS:-0.31.0 0.33.0}; do
     until grep -q "INSTALLED_$v\|ERROR" $P/install_$v.log 2>/dev/null; do sleep 60; done
     grep -q INSTALLED_$v $P/install_$v.log || { echo "INSTALL FAILED $v"; continue; }
     V=$P/venv_$v/bin/python

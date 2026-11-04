@@ -96,6 +96,9 @@ def main():
                 n_tokens=sum(len(v["tok"]) for v in seqs.values()))
     common.save(a.out, a.engine, meta, seqs)
     print(f"RESULT {a.out} seqs {len(seqs)} tokens {meta['n_tokens']} sec {sec:.1f} bad {bad}", flush=True)
+    import psutil  # vLLM engine-core / TP worker children would outlive os._exit and hold the GPU
+    for ch in psutil.Process().children(recursive=True):
+        ch.kill()
     os._exit(0)  # vLLM 0.32 core-dumps at interpreter shutdown on some hosts; output is already written
 
 
