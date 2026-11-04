@@ -4,8 +4,8 @@
 #   run138.sh score ROLLOUT_STEM G   integer engine scores a rollout file, bitwise compare with its sampler log p
 #   run138.sh speed TAG G            ms/step and tok/s at B = 1 and 64 (median of 3), sequential on one GPU
 # Every GPU must show 0 MiB. Outputs: $O/TAG_{t1,t0}_ms{1,64}.json, $O/TAG_speed_B{1,64}.json
-. $HOME/speed2d/env_decode.sh; cd $P
 MODE=$1; TAG=$2; shift 2
+. $HOME/speed2d/env_decode.sh; cd $P
 chk() { for g in "$@"; do u=$(nvidia-smi -i $g --query-gpu=memory.used --format=csv,noheader,nounits); [ "$u" = 0 ] || { echo "GPU $g busy ($u MiB)"; exit 1; }; done; }
 chk "$@"
 case $MODE in

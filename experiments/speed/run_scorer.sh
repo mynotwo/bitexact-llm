@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # usage: run_item.sh check|time TAG GPU [extra bench.py args]   (extra args select the engine variant)
 CODE=${CODE:-$2}; source $(dirname $0)/env_scorer.sh
-kind=$1; tag=$2; G=$3; shift 3; X="$*"
+kind=$1; tag=$2; G=$3; shift 3; X="--mode packed $*"
 export CUDA_VISIBLE_DEVICES=$G; cd $S
 echo "== $kind $tag GPU $G $(nvidia-smi -i $G --query-gpu=memory.used --format=csv,noheader) $(date +%T)"
 J=$O/$tag.$kind.jsonl; : > $J
