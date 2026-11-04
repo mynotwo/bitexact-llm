@@ -54,8 +54,8 @@ def main():
     if a.ref:
         ref = json.load(open(a.ref))
         prompts, resps, slp = ref["prompts"], ref["resps"], ref["sampler_lp"]
-        _, rlp, _ = vs.generate(prompts, ref["seeds"], 256)
-        res["resample_same_tokens"] = sum(x == y for x, y in zip(_, resps))
+        rt, rlp, _ = vs.generate(prompts, ref["seeds"], 256)
+        res["resample_same_tokens"] = sum(x == y for x, y in zip(rt, resps))
         res["resample_vs_ref_sampler"] = cmp(rlp, slp) if res["resample_same_tokens"] == len(resps) else None
     else:
         idx = next(T.batches(len(train), 64, 1))

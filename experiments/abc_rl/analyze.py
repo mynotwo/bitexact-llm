@@ -1,6 +1,6 @@
 """Plots and tables for the A/B/C RL runs.
 
-  python analyze.py --runs RUNS_DIR --out FIG_DIR      (run dirs named {arm}_s{seed})
+  python analyze.py --runs RUNS_DIR [RUNS_DIR ...] --out FIG_DIR      (run dirs named {arm}_s{seed})
 
 Writes reward.png, mismatch.png, eval.png, stability.png and prints markdown tables.
 """
@@ -19,9 +19,9 @@ def jl(p):
     return [json.loads(x) for x in open(p)] if os.path.exists(p) else []
 
 
-def load(runs):
+def load(runs_dirs):
     out = {}
-    for d in sorted(x for x in glob.glob(os.path.join(runs, "*_s*")) if os.path.isdir(x)):
+    for d in sorted(x for r in runs_dirs for x in glob.glob(os.path.join(r, "*_s*")) if os.path.isdir(x)):
         name = os.path.basename(d)
         arm, seed = name.rsplit("_s", 1)
         if arm in ARMS:
@@ -40,7 +40,10 @@ def ms(v):
         return "-"
     if len(v) == 1:
         return f"{v[0]:.3f}"
-    return f"{stt.mean(v):.3f} (" + ", ".join(f"{x:.3f}" for x in v) + ")"
+    return f"{stt.mean(v):.3f} ± {stt.stdev(v):.3f} [{min(v):.3f}, {max(v):.3f}]"
+
+
+LS = {1: "-", 2: "--", 3: ":", 4: "-."}
 
 
 def plots(R, out):
@@ -61,13 +64,13 @@ def plots(R, out):
             for (arm, seed), d in sorted(R.items()):
                 xs = [r["step"] for r in d["steps"]]
                 ys = [f(r) for r in d["steps"]]
-                ax.plot(xs, smooth(ys) if sm else ys, color=COL[arm], lw=1.2,
-                        ls="-" if seed == 1 else "--", label=f"{arm} s{seed}")
+                ax.plot(xs, smooth(ys) if sm else ys, color=COL[arm],
+                        ls=LS.get(seed, "-"), lw=0.9, label=f"{arm} s{seed}")
             ax.set_title(title, fontsize=10)
             ax.set_xlabel("step")
             if fn == "mismatch.png" and title.startswith("mean"):
                 ax.set_yscale("symlog", linthresh=1e-6)
-        axs[0][0].legend(fontsize=7)
+        axs[0][0].legend(fontsize=5, ncol=3)
         fig.tight_layout()
         fig.savefig(os.path.join(out, fn), dpi=130)
         plt.close(fig)
@@ -76,8 +79,26 @@ def plots(R, out):
         for (arm, seed), d in sorted(R.items()):
             ev = [e for e in d["eval"] if key in e]
             ax.plot([e["step"] for e in ev], [e[key] for e in ev], marker="o", ms=3, color=COL[arm],
-                    ls="-" if seed == 1 else "--", label=f"{arm} s{seed}")
+                    ls=LS.get(seed, "-"), lw=0.9, label=f"{arm} s{seed}")
         ax.set_title(f"GSM8K test[:500] greedy, {'integer engine' if key == 'int_acc' else 'vLLM bf16'}", fontsize=10)
+        ax.set_xlabel("step")
+    axs[0].legend(fontsize=6, ncol=2)
+    fig.tight_layout()
+    fig.savefig(os.path.join(out, "eval_seeds.png"), dpi=130)
+    plt.close(fig)
+    fig, axs = plt.subplots(1, 2, figsize=(10, 3.6))
+    for ax, key in zip(axs, ["int_acc", "float_acc"]):
+        for arm in ARMS:
+            runs = [d for (a_, _), d in R.items() if a_ == arm and d["eval"]]
+            if not runs:
+                continue
+            steps = sorted(set.intersection(*[{e["step"] for e in d["eval"]} for d in runs]))
+            m = [stt.mean(next(e[key] for e in d["eval"] if e["step"] == s) for d in runs) for s in steps]
+            lo = [min(next(e[key] for e in d["eval"] if e["step"] == s) for d in runs) for s in steps]
+            hi = [max(next(e[key] for e in d["eval"] if e["step"] == s) for d in runs) for s in steps]
+            ax.plot(steps, m, color=COL[arm], marker="o", ms=3, label=f"{arm} (n={len(runs)})")
+            ax.fill_between(steps, lo, hi, color=COL[arm], alpha=0.12)
+        ax.set_title(f"seed mean (band: min–max), {'integer engine' if key == 'int_acc' else 'vLLM'} eval", fontsize=10)
         ax.set_xlabel("step")
     axs[0].legend(fontsize=7)
     fig.tight_layout()
@@ -87,17 +108,19 @@ def plots(R, out):
 
 def tables(R):
     seeds = sorted({s for _, s in R})
-    print("| arm | int engine acc, step 0 | int engine acc, final | vLLM bf16 acc, final | train reward, last 20 steps |")
-    print("|---|---|---|---|---|")
+    print("| arm | n | int engine acc, step 200 | vLLM acc, step 200 | int acc, mean of steps 150-200 | train reward, last 20 steps | collapsed runs |")
+    print("|---|---|---|---|---|---|---|")
     for arm in ARMS:
         rs = [R[(arm, s)] for s in seeds if (arm, s) in R]
         if not rs:
             continue
-        e0 = [d["eval"][0]["int_acc"] for d in rs if d["eval"]]
         ei = [d["eval"][-1]["int_acc"] for d in rs if d["eval"]]
         ef = [d["eval"][-1]["float_acc"] for d in rs if d["eval"]]
+        el = [stt.mean(e["int_acc"] for e in d["eval"] if e["step"] >= 150) for d in rs
+              if any(e["step"] >= 150 for e in d["eval"])]
         tr = [stt.mean(r["reward"] for r in d["steps"][-20:]) for d in rs if d["steps"]]
-        print(f"| {arm} | {ms(e0)} | {ms(ei)} | {ms(ef)} | {ms(tr)} |")
+        col = sum(d["eval"][-1]["int_acc"] < 0.5 * max(e["int_acc"] for e in d["eval"]) for d in rs if d["eval"])
+        print(f"| {arm} | {len(rs)} | {ms(ei)} | {ms(ef)} | {ms(el)} | {ms(tr)} | {col}/{len(rs)} |")
     print()
     print("| arm | steps | mean \\|Δ\\| | max \\|Δ\\| | tokens Δ≠0 | ratio outside [0.8,1.2] | clip-active | KL k3 | grad norm max | non-finite grads | bound errors |")
     print("|---|---|---|---|---|---|---|---|---|---|---|")
@@ -126,15 +149,16 @@ def tables(R):
     if ev:
         print(f"\neval (500 greedy): integer engine {stt.median(e['int_sec'] for _, e in ev):.0f} s, "
               f"vLLM bf16 {stt.median(e['float_sec'] for _, e in ev):.1f} s (median)")
-    c = [r["float_vs_int_trainer"]["mean_abs"] for s in seeds if ("C", s) in R for r in R[("C", s)]["steps"]
-         if "float_vs_int_trainer" in r]
-    if c:
-        print(f"C diagnostic: mean |log p_float_trainer − log p_int| = {stt.mean(c):.3e}")
+    for arm in ("C", "D"):
+        c = [r["float_vs_int_trainer"]["mean_abs"] for s in seeds if (arm, s) in R for r in R[(arm, s)]["steps"]
+             if "float_vs_int_trainer" in r]
+        if c:
+            print(f"{arm} diagnostic: mean |log p_HF_trainer − log p_scorer| = {stt.mean(c):.3e}")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--runs", required=True)
+    ap.add_argument("--runs", nargs="+", required=True)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     R = load(a.runs)
