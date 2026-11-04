@@ -29,7 +29,7 @@ from vllm.model_executor.layers.attention import Attention
 from bitexact.int8.consts import FT
 from bitexact.int8.model import IntLlama
 from bitexact.llama import rope_tables
-from bitexact.vllm_plugin import paged, tri_logits, tri_paged, tri_sample
+from bitexact.vllm_plugin import paged, prefill, tri_logits, tri_paged, tri_sample
 from bitexact.vllm_plugin.sampler import STASH
 
 MODEL = None             # the loaded model in this process (the sampler reads the ln table from it)
@@ -161,6 +161,8 @@ class BitExactLlamaForCausalLM(nn.Module):
                 self.graphs = DecodeGraphs(self.m, [a.kv_cache for a in self.attn], self.max_len)
             if self.graphs.applies(plan, N):
                 return self.graphs.run(input_ids, positions.long(), plan)
+        if inputs_embeds is None and plan is not None and prefill.applies(self.m, plan, N):
+            return prefill.forward(self.m, [a.kv_cache for a in self.attn], input_ids, positions, plan)
         for i in range(self.m.L):
             x = paged.attention(self.m, i, x, positions, self.attn[i].kv_cache, plan)
             x = paged.mlp(self.m, self.m.layers[i], x)

@@ -38,7 +38,16 @@ class Plan:
     dec_req: torch.Tensor       # [Rd] requests with one query token (device)
     dec_tok: torch.Tensor       # [Rd] their token index
     pre: list                   # [(req, tok0, qlen, seq_len)] requests with > 1 query token
-    pre_groups: list            # batched query tiles of the prefill requests (PreGroup)
+    positions: torch.Tensor = None   # [N] position of each token
+    qdim: int = H * HD
+    _groups: list = None
+
+    def groups(self):
+        """Batched query tiles of the prefill requests (PreGroup), built on first use (the fused forward,
+        prefill.py, does not need them)."""
+        if self._groups is None:
+            self._groups = _pre_groups(self.pre, self.positions, self.block_table.device, self.qdim)
+        return self._groups
 
 
 @dataclass
@@ -95,7 +104,7 @@ def make_plan(meta, n_tokens, positions, qdim=H * HD):
     t = lambda xs: torch.tensor(xs, dtype=torch.long, device=dev)
     return Plan(n=min(n, n_tokens), slot=meta.slot_mapping[:n].long(), block_table=meta.block_table.long(),
                 dec_req=t([d[0] for d in dec]), dec_tok=t([d[1] for d in dec]),
-                pre=pre, pre_groups=_pre_groups(pre, positions, dev, qdim))
+                pre=pre, positions=positions, qdim=qdim)
 
 
 def kv_view(kv):
@@ -118,15 +127,22 @@ def attn_div(num, den):
     return rdiv(num << (FR - FV), den)
 
 
-def _prefill_group(m, q, c, plan, grp):
+def _prefill_group_nd(m, q, c, plan, grp):
     """Several prefill requests in one kernel call, padded to the longest (Tm queries). Padding queries
-    repeat the request's first query (results dropped)."""
+    repeat the request's first query (results dropped). Returns num [nv, HKV, G, HD] and den [nv, HKV, G, 1]
+    of the valid queries."""
     n, Tm = grp.idx.shape
     HKV, G, HD = q.shape[1:]
     qt = q[grp.idx].permute(0, 2, 3, 1, 4).reshape(n, HKV, G * Tm, HD)
     qp = grp.pos.view(n, 1, Tm).expand(n, G, Tm).reshape(n, G * Tm)
-    ot = _attend(m, qt, qp, c, plan.block_table[grp.req])
-    return ot.view(n, HKV, G, Tm, HD).permute(0, 3, 1, 2, 4)[grp.valid]
+    num, den = tri_paged.attend(qt, qp, c, plan.block_table[grp.req], m.ptab)
+    return (num.view(n, HKV, G, Tm, HD).permute(0, 3, 1, 2, 4)[grp.valid],
+            den.view(n, HKV, G, Tm, 1).permute(0, 3, 1, 2, 4)[grp.valid])
+
+
+def _prefill_group(m, q, c, plan, grp):
+    num, den = _prefill_group_nd(m, q, c, plan, grp)
+    return attn_div(num, den)
 
 
 def _qkv(m, ly, x, pos):
@@ -183,6 +199,6 @@ def attention(m, i, x, pos, kv, plan):
             blocks = plan.block_table[plan.dec_req]
             qp = p[plan.dec_tok].view(-1, 1).expand(-1, G)
             o[plan.dec_tok] = _attend(m, q[plan.dec_tok], qp, c, blocks)
-        for grp in plan.pre_groups:
+        for grp in plan.groups():
             o[grp.dst] = _prefill_group(m, q, c, plan, grp)
     return _out(m, ly, o, x)
