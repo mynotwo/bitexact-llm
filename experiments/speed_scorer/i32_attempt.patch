@@ -1,0 +1,142 @@
+--- a/src/bitexact/int8/segs.py	2026-11-04 00:19:26
++++ b/src/bitexact/int8/segs.py	2026-11-04 00:18:57
+@@ -100,11 +100,15 @@
+ 
+ 
+ class Segs:
+-    def __init__(self, nl, cuda, compiled, dynamic=None):
+-        """dynamic=None: one compile per shape until a shape changes, then shape-generic kernels (nl is a Python int
++    def __init__(self, nl, cuda, compiled, dynamic=None, i32=False):
++        """i32: tensors that cross segment boundaries (residual, projections, gate / up, logits, q, attention
++        output) are stored as int32 and widened to int64 inside the segments, so the integer rules are unchanged
++        and only the bytes moved halve. Measured ranges are 17 to 25 bits; a value that does not fit int32 sets
++        the bound flag (checked at the end), it never wraps silently. CUDA only.
++        dynamic=None: one compile per shape until a shape changes, then shape-generic kernels (nl is a Python int
+         closed over and stays static). dynamic=False: one compile per distinct shape, kernels specialised to it
+         (faster than the shape-generic ones; callers bucket the row counts, e.g. the packed scorer)."""
+-        self.compiled, self.dynamic = compiled, dynamic
++        self.compiled, self.dynamic, self.i32 = compiled, dynamic, i32
+         if compiled and dynamic is False:
+             torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, 64)
+         wrap = (lambda f: torch.compile(f, dynamic=dynamic)) if compiled else (lambda f: f)
+@@ -114,6 +118,19 @@
+         def with_limbs(out):
+             return (lim(out[0]),) + tuple(out[1:])
+ 
++        if i32:
++            lo = (lambda f: lambda *a: _narrow(*f(*a)))                  # (y, flag) -> (int32 y, flag')
++            w = lambda t: t.long()                                       # noqa: E731
++            self.pre_norm = wrap(lambda x, gamma: with_limbs(pre_norm(w(x), gamma, nl)))
++            self.pre_plain = wrap(lambda x: with_limbs(pre_plain(w(x), nl)))
++            self.post = wrap(lo(lambda c, m, fmsh, mant, e: post(join(c, mant.shape[0]), m, fmsh, mant, e)))
++            self.post_add = wrap(lo(lambda c, m, fmsh, mant, e, x:
++                                    _add(post(join(c, mant.shape[0]), m, fmsh, mant, e), w(x))))
++            self.qkv_rows = wrap(lambda y, c, s: _q32(qkv_rows(w(y), c, s)))
++            rows32 = lambda num, den: attn_rows(num, den).to(torch.int32)              # noqa: E731
++            self.attn_rows = torch.compile(rows32, dynamic=None) if compiled else rows32
++            self.silu_mul = wrap(lambda gu, lut: with_limbs(silu_mul(w(gu), lut, nl)))
++            return
+         self.pre_norm = wrap(lambda x, gamma: with_limbs(pre_norm(x, gamma, nl)))
+         self.pre_plain = wrap(lambda x: with_limbs(pre_plain(x, nl)))
+         self.post = wrap(lambda c, m, fmsh, mant, e: post(join(c, mant.shape[0]), m, fmsh, mant, e))
+@@ -130,3 +147,12 @@
+     y, flag = out
+     return x + y.view(x.shape), flag
+ 
++
++def _narrow(y, flag):
++    """int64 y -> int32, with the bound flag raised when a value would not fit."""
++    return y.to(torch.int32), flag | (y.abs().amax() >= 1 << 31)
++
++
++def _q32(out):
++    q, kv, flag = out
++    return q.to(torch.int32), kv, flag
+--- a/src/bitexact/int8/model.py	2026-11-04 00:19:26
++++ b/src/bitexact/int8/model.py	2026-11-04 00:18:57
+@@ -40,11 +40,11 @@
+     """nl: activation limbs per linear input (2: |q| <= 32512). compiled: torch.compile the element-wise
+     segments (same integers); None (default) = on for CUDA, off for CPU. compiled=False is the eager
+     reference: every op a separate PyTorch kernel, same integers. fused: attention through the plugin's
+-    tri_paged kernels (default on CUDA). dynamic: see Segs."""
++    tri_paged kernels (default on CUDA). dynamic, i32: see Segs."""
+ 
+     FR = FR
+ 
+-    def __init__(self, c, device, nl=2, n_layers=None, compiled=None, fused=None, dynamic=None):
++    def __init__(self, c, device, nl=2, n_layers=None, compiled=None, fused=None, dynamic=None, i32=False):
+         self.dev = torch.device(device)
+         if compiled is None:
+             compiled = self.dev.type == "cuda"
+@@ -53,6 +53,10 @@
+         self.L = c["n_layers"] if n_layers is None else n_layers
+         t = lambda k: c[k].to(device)
+         self.emb = c["emb"].to(device)
++        self.xdt = torch.int32 if i32 else torch.long             # dtype of the residual stream between segments
++        if i32:
++            assert self.dev.type == "cuda" and int(self.emb.abs().max()) < 1 << 31
++            self.emb = self.emb.to(torch.int32)
+         self.layers = []
+         for i in range(self.L):
+             ly = {"ga": t(f"{i}.ga"), "gm": t(f"{i}.gm")}
+@@ -64,7 +68,7 @@
+         self.exp, self.silu_t, self.cos, self.sin, self.ln = t("exp"), t("silu"), t("cos"), t("sin"), t("ln")
+         self.err = torch.zeros((), dtype=torch.bool, device=device)
+         self.sha = c.get("sha256")
+-        self.sg = Segs(nl, self.dev.type == "cuda", compiled, dynamic)
++        self.sg = Segs(nl, self.dev.type == "cuda", compiled, dynamic, i32)
+         self._w64 = {}                                      # CPU: float64 copies of the int8 weights
+         if self.fused:
+             from bitexact.vllm_plugin import tri_paged
+@@ -134,6 +138,7 @@
+         """ids, pos: int64 [B, T]. Writes K/V at pos into cache rows 0..B-1. Returns the final residual
+         stream [B, T, D] at FR (before the final norm). S: keys attended (default max(pos) + 1; a fixed S
+         avoids the host sync, e.g. for CUDA graphs; keys beyond a query's position are masked anyway)."""
++        assert self.xdt == torch.long, "i32 storage is for the packed scorer (int8/scorer.py)"
+         x = self.emb[ids].long()
+         S = int(pos.max()) + 1 if S is None else S
+         for i in range(self.L):
+--- a/src/bitexact/int8/scorer.py	2026-11-04 00:20:14
++++ b/src/bitexact/int8/scorer.py	2026-11-04 00:18:57
+@@ -154,11 +154,10 @@
+ 
+ 
+ class Scorer:
+-    def __init__(self, m, rows=2048, bs=16, lm_rows=512, attn_kw=None):
++    def __init__(self, m, rows=2048, bs=16, lm_rows=512):
+         if m.sg.compiled and m.sg.dynamic is not False:                  # specialised kernels per bucketed shape
+-            m.sg = Segs(m.nl, True, True, dynamic=False)
++            m.sg = Segs(m.nl, True, True, dynamic=False, i32=m.sg.i32)
+         self.m, self.rows, self.bs, self.lm_rows = m, rows, bs, lm_rows
+-        self.attn_kw = attn_kw or {}                                     # launch parameters of tri_paged.attend
+         self.c = []                                                    # paged K | V per layer, grown on demand
+ 
+     def _cache(self, NB):
+@@ -198,7 +197,7 @@
+         from bitexact.vllm_plugin import tri_paged
+         m = self.m
+         ids, pos = get(f"c{c0}i"), get(f"c{c0}p")
+-        x = m.emb[ids].long()
++        x = m.emb[ids].to(m.xdt)
+         cos, sin = m.cos[pos][:, None, None], m.sin[pos][:, None, None]
+         widx = get(f"c{c0}w")
+         grp = []
+@@ -213,15 +212,15 @@
+             c = self.c[i]
+             c.view(-1, 2 * HD).index_copy_(0, widx.view(-1), kv.view(-1, 2 * HD))
+             # rows of padding tokens stay 0; the last row takes the writes of padded queries
+-            o = torch.zeros(n * H + 1, HD, dtype=torch.long, device=m.dev)
++            o = torch.zeros(n * H + 1, HD, dtype=m.xdt, device=m.dev)
+             for nt, gidx, didx, qpos, bt in grp:
+                 qt = qr.index_select(0, gidx).view(nt, HKV, -1, HD)
+-                num, den = tri_paged.attend(qt, qpos, c, bt, m.ptab, **self.attn_kw)
++                num, den = tri_paged.attend(qt, qpos, c, bt, m.ptab)
+                 o.index_copy_(0, didx, m.sg.attn_rows(num, den).view(-1, HD))
+             x = m._linear(m.sg.pre_plain(o[:n * H].view(n, H * HD)), ly["wo"], x)
+             gu = m.norm_linear(x, ly["gm"], ly["wgu"])
+             a8, mant, e, flag = m.sg.silu_mul(gu, m.silu_t)
+             m._flag(flag)
+             x = m._linear((a8, mant, e), ly["wd"], x)
+-        m._flag(x.abs().amax() >= 1 << 42)
++        m._flag(x.long().abs().amax() >= 1 << 42)
+         return x[get(f"c{c0}n")]
