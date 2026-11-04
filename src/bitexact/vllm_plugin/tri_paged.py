@@ -182,6 +182,7 @@ def weight_table(lut):
     return t.to(torch.int32).contiguous()
 
 
+MAX_KEYS = 43690       # keys per sequence: 2^31 / (3 * 2^14), see _acc_kernel
 SM_TARGET = 264        # programs to aim for (2 per SM on H100 / H800)
 
 
@@ -214,7 +215,10 @@ def attend(q, qpos, cache, bt, ptab, nsplit=None, bm=None, bn=64, warps=4):
     With nsplit == 1 each output element has exactly one writer: the kernels store instead of using atomics, and
     mx / num / den are not initialised (same values: a row with no visible key gets NEG / 0 / 0 in both paths)."""
     R, nh, M, dh = q.shape
-    assert nh == HKV and dh == HD and cache.stride(3) == 1 and bt.shape[1] * cache.shape[2] < 43690
+    assert nh == HKV and dh == HD and cache.stride(3) == 1
+    if bt.shape[1] * cache.shape[2] >= MAX_KEYS:
+        raise ValueError(f"tri_paged.attend: block table spans {bt.shape[1] * cache.shape[2]} keys; the int32 limb "
+                         f"partial sums of p.v are exact only below {MAX_KEYS} keys (max_model_len / sequence length)")
     q = q.contiguous()
     qpos = qpos.contiguous()
     BM = bm or (16 if M <= 16 else 64)

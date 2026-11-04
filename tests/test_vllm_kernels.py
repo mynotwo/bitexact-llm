@@ -65,3 +65,15 @@ def test_gpu_pcg_matches_numpy():
     keys += [(0, 0), (1, 0), (2**32 - 1, 7), (12, 47)]
     got = gpu_pcg.raw_rows(keys, "cuda").cpu()
     assert torch.equal(got, sampling.raw_rows(keys))
+
+
+def test_attend_key_limit_is_a_clear_error():
+    from bitexact.int8.consts import exp_table
+    from bitexact.vllm_plugin import tri_paged
+    ptab = tri_paged.weight_table(exp_table().cuda())
+    c = torch.zeros(4, 8, 16, 128, dtype=torch.int32, device="cuda")
+    q = torch.zeros(1, 8, 1, 64, dtype=torch.long, device="cuda")
+    qpos = torch.zeros(1, 1, dtype=torch.long, device="cuda")
+    bt = torch.zeros(1, tri_paged.MAX_KEYS // 16 + 1, dtype=torch.int32, device="cuda")    # spans >= MAX_KEYS keys
+    with pytest.raises(ValueError, match="keys"):
+        tri_paged.attend(q, qpos, c, bt, ptab)

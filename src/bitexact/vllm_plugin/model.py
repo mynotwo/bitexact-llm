@@ -55,6 +55,11 @@ class BitExactLlamaForCausalLM(nn.Module):
         path = os.environ.get("BITEXACT_CONST") or getattr(cfg, "bitexact_const", None)
         assert path, "set bitexact_const in config.json or $BITEXACT_CONST"
         c = torch.load(path, map_location="cpu", weights_only=False)
+        bs = getattr(vllm_config.cache_config, "block_size", None) or 16
+        L = vllm_config.model_config.max_model_len
+        if -(-L // bs) * bs >= tri_paged.MAX_KEYS:
+            raise ValueError(f"max_model_len={L} too long for the fused integer attention (exact below "
+                             f"{tri_paged.MAX_KEYS} keys per sequence, block table rounded up to block size {bs})")
         _extend_rope(c, vllm_config.model_config.model, vllm_config.model_config.max_model_len)
         dev = torch.device("cuda", torch.cuda.current_device())
         self.m = IntLlama(c, dev, nl=int(getattr(cfg, "bitexact_nl", 2)),
