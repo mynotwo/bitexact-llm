@@ -5,7 +5,7 @@ Branch perf3/8b (base 07aa43c), H800 on 141, GPU 0 shared with another lane.
 ## Conclusion
 - The plugin runs 8B. Bit identity: 7 of 7 suite runs (short targets, alone / busy / prefix cache on and off / preemption-free budget 64 / eager / vLLM graphs) match the standalone int8 `IntLlama` 8B reference in tokens and in every int64 logits hash (576 positions each, 0 diffs). Alone vs batch 32 vs batch 128 (graphs and eager): PASS (192 hashed rows each).
 - Same code on 1B: ref hashes of base and branch identical, 19 GPU/decode-path tests pass (base 18).
-- Throughput: 8B plugin is slower than stock bf16 at B=32 and B=128, faster than BATCH_INVARIANT at B=128 (measurement caveat below).
+- Throughput: 8B plugin is slower than stock bf16 at B=32 and B=128, slower than BATCH_INVARIANT at B=128 (8,064 vs 9,995; that BATCH_INVARIANT run used the default attention backend, not TRITON_ATTN; measurement caveat below).
 
 ## What changed
 - No 1B constants left in int8/plugin path: H, HKV, HD, D, FF come from the constants config (`llama.dims`); `Segs`, `qkv`, `attn_out`, `silu_mul`, `_rope`, KV-cache layout, plugin Attention declaration (HKV heads, head_size 2*HD), paged planner and all tri_paged kernels take them from tensor shapes. RoPE tables are built from the HF config (theta 500000, llama3 scaling factor 8) in the constants and `_extend_rope`.

@@ -159,12 +159,21 @@ class IntSampler(LogitsProcessor):
         if self.lnt is None:
             from bitexact.vllm_plugin.model import MODEL
             self.lnt = MODEL.m.ln
-        slots = ctx.idx_mapping_np                       # one logits row per request (no spec decoding)
-        assert len(slots) == n, "logits rows != requests (speculative decoding is not supported)"
+        slots = ctx.idx_mapping_np
         plen = self.rs.prompt_len.np
-        ts = ctx.seq_lens_upper_bound_np[:n].astype(np.int64) - plen[slots].astype(np.int64)
-        seeds = self.seed[slots]
-        tn, td = self.tn[slots], self.td[slots]
+        if len(slots) == n:                              # one logits row per request
+            rows = slots
+            ts = ctx.seq_lens_upper_bound_np[:n].astype(np.int64) - plen[slots].astype(np.int64)
+        else:
+            # Speculative decoding: a request owns 1 + k rows (its last token and k drafts). The host does not
+            # know how many drafts were accepted last step, so the generated index of each row comes from the
+            # device positions (row at position p samples the token at p + 1), one sync per step. Row j of a
+            # request is sampled exactly as plain decoding samples that position (same seed, same t), so a draft
+            # is accepted iff it equals the token plain decoding would have produced there.
+            rows = ctx.expanded_idx_mapping.cpu().numpy().astype(np.intp)
+            ts = ctx.pos.cpu().numpy().astype(np.int64) + 1 - plen[rows].astype(np.int64)
+        seeds = self.seed[rows]
+        tn, td = self.tn[rows], self.td[rows]
         wide = bool(seeds.max(initial=0) >= 1 << 32 or ts.max(initial=0) >= 1 << 32)   # GPU seeding needs < 2^32
         if head is None or wide:
             temps = list(zip(tn.tolist(), td.tolist()))
@@ -178,8 +187,9 @@ class IntSampler(LogitsProcessor):
         if self.log:
             li = head.logits() if li is None else li
             pos = ctx.pos.tolist()
-            assert ctx.expanded_idx_mapping.tolist() == slots.tolist(), "host slots != device slots"
-            assert ts.tolist() == [pos[r] + 1 - int(plen[s]) for r, s in enumerate(slots)], "host t != device t"
+            if len(slots) == n:
+                assert ctx.expanded_idx_mapping.tolist() == slots.tolist(), "host slots != device slots"
+                assert ts.tolist() == [pos[r] + 1 - int(plen[s]) for r, s in enumerate(slots)], "host t != device t"
             self._log(li, seeds.tolist(), ts.tolist(), y)
         if head is None:
             logits.fill_(float("-inf"))
