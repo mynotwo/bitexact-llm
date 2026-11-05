@@ -49,7 +49,7 @@ run() { log=$1; to=$2; tree=$3; shift 3       # run LOG TIMEOUT_S TREE CMD...   
   echo "$(date +%T) start $(basename $log .log)"
   for try in 1 2 3 4; do      # vLLM's memory profiling asserts when a neighbour lane frees GPU memory meanwhile: retry
   ( cd $S/$tree && PYTHONPATH=$S/$tree/src:$S/$tree/tests/vllm CUDA_VISIBLE_DEVICES=$GPU timeout $to "$@" ) > $log 2>&1
-  rc=$?; grep -q "Error in memory profiling" $log || break; echo "$(date +%T) retry $try"; wait_gpu retry; done; echo "$(date +%T) end $(basename $log .log) rc=$rc $(grep -h '^RESULT\|passed\|failed\|BATCH_INV\|^STACK\|^PROF' $log | tail -n 1 | cut -c1-260)"
+  rc=$?; grep -q "Error in memory profiling\|Free memory on device" $log || break; echo "$(date +%T) retry $try"; wait_gpu retry; done; echo "$(date +%T) end $(basename $log .log) rc=$rc $(grep -h '^RESULT\|passed\|failed\|BATCH_INV\|^STACK\|^PROF' $log | tail -n 1 | cut -c1-260)"
   [ $rc = 0 ] || grep -h "Error\|error:" $log | tail -n 3 | cut -c1-220; }
 cmp_tree() { echo "== $*" | tee -a $SUM; ( cd $S/repo && $PY tests/vllm/compare.py "$@" ) 2>&1 | tee -a $SUM; }
 hcmp() { if cmp -s $1.hash $2.hash; then echo "cmp OK $(basename $2).hash"; else echo "cmp DIFF $(basename $2).hash"; fi | tee -a $SUM; }
