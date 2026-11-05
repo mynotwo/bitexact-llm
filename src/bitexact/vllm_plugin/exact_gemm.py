@@ -119,7 +119,19 @@ class FusedLin:
     [M, K], sh int64 [M] -> y int64 [M, N] at FR; sets flag (int32 [1]) to 1 when wmm.epilogue's checked
     condition (lost bits, |y| >= 2^62) holds anywhere."""
 
-    CFG = {16: (16, 16, 128, 4, 3), 64: (64, 32, 128, 4, 3), 1 << 30: (128, 32, 128, 4, 3)}      # max M -> BM, BN, BK, warps, stages
+    # (N, K) -> [(max M, (BM, BN, BK, warps, stages))], swept per shape on an H800 (experiments/perf/p7_exactplugin/
+    # sweep_gemm.py, Llama-3.2-1B shapes); the integers do not depend on the config
+    TABLE = {
+        (3072, 2048): [(8, (16, 32, 128, 4, 3)), (32, (16, 64, 128, 4, 3)), (1 << 30, (64, 32, 128, 4, 4))],
+        (2048, 2048): [(8, (16, 32, 128, 4, 3)), (32, (16, 32, 128, 4, 3)), (64, (16, 64, 128, 4, 3)),
+                       (1 << 30, (64, 32, 128, 4, 4))],
+        (16384, 2048): [(8, (16, 64, 128, 4, 3)), (32, (32, 64, 128, 4, 3)), (64, (64, 64, 128, 4, 2)),
+                        (1 << 30, (64, 64, 64, 4, 3))],
+        (2048, 8192): [(8, (16, 32, 128, 4, 3)), (32, (16, 32, 256, 4, 3)), (64, (16, 64, 256, 4, 3)),
+                       (1 << 30, (64, 32, 128, 4, 4))],
+        (128256, 2048): [(8, (16, 64, 128, 4, 4)), (32, (32, 64, 128, 4, 3)), (1 << 30, (64, 64, 64, 4, 4))],
+    }
+    DEFAULT = [(16, (16, 32, 128, 4, 3)), (64, (64, 32, 128, 4, 3)), (1 << 30, (64, 64, 64, 4, 3))]
 
     def __init__(self, lin, cfg=None):
         self.limbs, self.d, self.g, self.N = lin.limbs, lin.d, lin.g, lin.N
@@ -143,7 +155,7 @@ class FusedLin:
 
     def __call__(self, q, sh, flag, checked=True):
         M, K = q.shape
-        cfg = self.cfg or next(c for mx, c in sorted(self.CFG.items()) if M <= mx)
+        cfg = self.cfg or next(c for mx, c in self.TABLE.get((self.N, K), self.DEFAULT) if M <= mx)
         BM, BN, BK, nw, ns = cfg
         y = torch.empty((M, self.N), dtype=torch.long, device=q.device)
         grid = (triton.cdiv(self.N, BN), triton.cdiv(M, BM))
