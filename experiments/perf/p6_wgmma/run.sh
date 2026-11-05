@@ -42,7 +42,7 @@ wait_gpu() { w=0; while ! free $GPU; do
     [ $w -ge $MAXWAIT ] && { echo "FAIL GPU $GPU busy for ${MAXWAIT}s"; return 1; }
     [ $((w % 600)) = 0 ] && echo "$(date +%T) wait GPU $GPU"
     sleep 30; w=$((w + 30)); done
-  sleep 3; free $GPU || { wait_gpu; return; }
+  sleep 3; free $GPU || { wait_gpu "$1"; return; }
   echo "$(date +%T) $1 gpu${GPU}=$(nvidia-smi -i $GPU --query-gpu=memory.used,utilization.gpu --format=csv,noheader | tr -d ' ') uptime=$(uptime | sed 's/.*load average: //')" >> $O/quiet_check.log; }
 run() { log=$1; to=$2; tree=$3; shift 3       # run LOG TIMEOUT_S TREE CMD...   (cwd = tree root)
   wait_gpu $(basename $log .log) || return 1
