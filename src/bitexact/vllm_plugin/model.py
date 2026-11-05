@@ -191,6 +191,12 @@ class BitExactLlamaForCausalLM(nn.Module):
         qsl = meta.query_start_loc.cpu().tolist()
         R = len(meta.seq_lens)
         n = min(qsl[R], N)
+        if self.plan_log:                                   # same line as _log_plan (plan_stats.py)
+            sl = meta.seq_lens.cpu().tolist()
+            ql = [qsl[r + 1] - qsl[r] for r in range(R)]
+            with open(self.plan_log, "a") as f:
+                f.write(f"{n} {sum(q == 1 for q in ql)} {sum(q > 1 for q in ql)} "
+                        f"{sum(q > 1 and sl[r] - q > 0 for r, q in enumerate(ql))}\n")
         if n == N == R and self.spec_q == 1 and qsl[R] == R:
             # uniform decode: the device-only path vLLM captures; its warm-up run before each capture comes
             # through here, so the compiled stages are built outside the capture
