@@ -23,11 +23,13 @@ def main():
     ap.add_argument("--out-len", type=int, default=128)
     ap.add_argument("--temp", type=float, default=0.0)
     ap.add_argument("--eager", action="store_true")
+    ap.add_argument("--attn", default="", help="vLLM attention backend (stock batch-invariant: TRITON_ATTN)")
     ap.add_argument("--tag", default="")
     a = ap.parse_args()
     from vllm import LLM, SamplingParams
     from vllm.inputs import TokensPrompt
-    llm = LLM(model=a.model, enforce_eager=a.eager, max_num_seqs=max(a.batch, 1), max_model_len=2048,
+    kw = {"attention_backend": a.attn} if a.attn else {}
+    llm = LLM(model=a.model, enforce_eager=a.eager, **kw, max_num_seqs=max(a.batch, 1), max_model_len=2048,
               max_num_batched_tokens=max(2048, a.batch * a.in_len), gpu_memory_utilization=0.5, seed=0)
     rng = random.Random(0)
     prompts = [TokensPrompt(prompt_token_ids=[rng.randrange(1000, 120000) for _ in range(a.in_len)])

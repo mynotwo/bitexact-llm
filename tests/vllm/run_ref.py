@@ -1,4 +1,4 @@
-"""Reference for the invariance tests, without vLLM: bitexact.int8 IntLlama runs each target prompt on its own.
+"""Reference for the invariance tests, without vLLM: bitexact.int8 IntLlama (or ExactLlama for exact constants) runs each target prompt on its own.
 
 Per target: prefill of the prompt into its own Cache (1024-token chunks), then one token per step. Token choice
 is greedy (first_argmax) or Gumbel-max with the same integer noise the plugin uses (sampling.raw_rows keyed by
@@ -27,8 +27,7 @@ def main():
     import workload
 
     from bitexact import sampling
-    from bitexact.int8.consts import FR
-    from bitexact.int8.model import IntLlama
+    from bitexact.generate import load
     from bitexact.intops import first_argmax
     from bitexact.sampling import temp_ratio
 
@@ -36,7 +35,8 @@ def main():
     if a.long:
         from bitexact.vllm_plugin.model import _extend_rope
         _extend_rope(c, a.model_dir, 16384)
-    m = IntLlama(c, "cuda", nl=2)
+    m = load(c, "cuda")                       # ExactLlama for exact constants (lm.limbs), else IntLlama
+    FR = m.FR
     res, lines = {}, []
     with torch.no_grad():
         for w in workload.pick(a.long, a.max_new):

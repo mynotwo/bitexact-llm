@@ -1,0 +1,259 @@
+{
+ "tag": "ex",
+ "model": "exactmodel",
+ "batch": 32,
+ "eager": false,
+ "temp": 0.0,
+ "in_len": 128,
+ "out_len": 128,
+ "out_tokens": 4096,
+ "sec": 1.233,
+ "tok_per_s": 3321.2,
+ "bitexact_src": "/data41/audreymao/perf7_20261105/exactplugin/dev/src/bitexact",
+ "timing": {
+  "steps": 128,
+  "prefill_step_ms": 25.621,
+  "prefill_host_exec_ms": 24.189,
+  "prefill_host_sample_ms": 0.898,
+  "decode_step_ms_median": 7.166,
+  "decode_step_ms_mean": 7.17,
+  "decode_host_exec_ms": 0.777,
+  "decode_host_sample_ms": 0.982
+ },
+ "prefill": {
+  "start": 0,
+  "steps": 1,
+  "kernels_per_step": 754.0,
+  "kernel_ms_per_step": 315.7674,
+  "busy_ms_per_step": 315.7672,
+  "span_ms_per_step": 318.9482,
+  "gpu_idle_ms_per_step": 3.181,
+  "buckets_ms_per_step": {
+   "gemm_int8": 170.9158,
+   "gemm_bf16": 0.0,
+   "elementwise": 134.455,
+   "attention": 9.2676,
+   "kv_write": 0.0,
+   "sampling_logits": 0.7171,
+   "memcpy": 0.0164,
+   "other": 0.3955
+  },
+  "sampling_logits_split_ms": {
+   "rest": 0.7171
+  },
+  "host_exec_ms_per_step": 42.2253,
+  "host_sample_ms_per_step": 1.3376,
+  "unattributed_kernel_ms_total": 0.0,
+  "top": [
+   {
+    "name": "_wmm_kernel",
+    "bucket": "gemm_int8",
+    "ms_per_step": 170.9158,
+    "calls_per_step": 64.0
+   },
+   {
+    "name": "triton_red_fused_abs_amax_1",
+    "bucket": "elementwise",
+    "ms_per_step": 29.651,
+    "calls_per_step": 49.0
+   },
+   {
+    "name": "triton_poi_fused___lshift_____rshift____to_copy_add_bitwise_and_clamp_eq_ge_index_lt_mul_neg_ones_like_rsub_su",
+    "bucket": "elementwise",
+    "ms_per_step": 23.5469,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "triton_red_fused___lshift_____rshift____to_copy_add_bitwise_and_bitwise_or_clamp_eq_ge_gt_index_lt_mul_ne_neg_",
+    "bucket": "elementwise",
+    "ms_per_step": 17.8939,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "triton_red_fused___lshift_____rshift____to_copy_abs_add_all_bitwise_and_clamp_div_frexp_ge_gt_index_le_mul_neg",
+    "bucket": "elementwise",
+    "ms_per_step": 15.3714,
+    "calls_per_step": 16.0
+   },
+   {
+    "name": "triton_red_fused_abs_amax_3",
+    "bucket": "elementwise",
+    "ms_per_step": 14.9466,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "triton_poi_fused___lshift_____rshift____to_copy_add_clamp_div_ge_mul_neg_ones_like_sub_unsqueeze_where_0",
+    "bucket": "elementwise",
+    "ms_per_step": 10.6486,
+    "calls_per_step": 33.0
+   },
+   {
+    "name": "_xacc_kernel",
+    "bucket": "attention",
+    "ms_per_step": 9.2656,
+    "calls_per_step": 16.0
+   },
+   {
+    "name": "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_frexp_full_like_gt_ne_neg_ones_like_sub_uns",
+    "bucket": "elementwise",
+    "ms_per_step": 8.7276,
+    "calls_per_step": 65.0
+   },
+   {
+    "name": "triton_poi_fused___lshift_____rshift____to_copy_add_clamp_div_ge_mul_sub_where_0",
+    "bucket": "elementwise",
+    "ms_per_step": 2.8926,
+    "calls_per_step": 16.0
+   },
+   {
+    "name": "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_floor_floor_divide_frexp_full_like_ge_gt_le",
+    "bucket": "elementwise",
+    "ms_per_step": 2.7644,
+    "calls_per_step": 33.0
+   },
+   {
+    "name": "triton_red_fused_amax_bitwise_or_ge_gt_4",
+    "bucket": "elementwise",
+    "ms_per_step": 2.7237,
+    "calls_per_step": 16.0
+   },
+   {
+    "name": "triton_red_fused_abs_amax_slice_2",
+    "bucket": "elementwise",
+    "ms_per_step": 1.4547,
+    "calls_per_step": 16.0
+   },
+   {
+    "name": "triton_per_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_frexp_full_like_gt_ne_neg_ones_like_permute",
+    "bucket": "elementwise",
+    "ms_per_step": 1.145,
+    "calls_per_step": 16.0
+   },
+   {
+    "name": "triton_red_fused_add_any_bitwise_or_ge_le_sub_unsqueeze_where_1",
+    "bucket": "elementwise",
+    "ms_per_step": 1.0142,
+    "calls_per_step": 32.0
+   }
+  ],
+  "profiled_wall_ms_per_step": 43.669
+ },
+ "decode": {
+  "start": 8,
+  "steps": 16,
+  "kernels_per_step": 633.1,
+  "kernel_ms_per_step": 6.8392,
+  "busy_ms_per_step": 6.8372,
+  "span_ms_per_step": 7.2461,
+  "gpu_idle_ms_per_step": 0.4089,
+  "buckets_ms_per_step": {
+   "gemm_int8": 0.0,
+   "gemm_bf16": 0.0,
+   "elementwise": 2.1788,
+   "attention": 0.2786,
+   "kv_write": 0.0,
+   "sampling_logits": 0.7233,
+   "memcpy": 0.0066,
+   "other": 3.6519
+  },
+  "sampling_logits_split_ms": {
+   "rest": 0.7233
+  },
+  "host_exec_ms_per_step": 1.7138,
+  "host_sample_ms_per_step": 1.3907,
+  "unattributed_kernel_ms_total": 0.0,
+  "top": [
+   {
+    "name": "_lin_kernel",
+    "bucket": "other",
+    "ms_per_step": 3.6123,
+    "calls_per_step": 64.0
+   },
+   {
+    "name": "_lin_kernel",
+    "bucket": "sampling_logits",
+    "ms_per_step": 0.5861,
+    "calls_per_step": 1.0
+   },
+   {
+    "name": "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_frexp_full_like_gt_ne_neg_ones_like_sub_uns",
+    "bucket": "elementwise",
+    "ms_per_step": 0.5279,
+    "calls_per_step": 65.0
+   },
+   {
+    "name": "triton_poi_fused___lshift_____rshift____to_copy_add_clamp_div_ge_mul_neg_ones_like_sub_unsqueeze_where_0",
+    "bucket": "elementwise",
+    "ms_per_step": 0.3223,
+    "calls_per_step": 33.0
+   },
+   {
+    "name": "_xacc_kernel",
+    "bucket": "attention",
+    "ms_per_step": 0.2764,
+    "calls_per_step": 16.0
+   },
+   {
+    "name": "triton_red_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_floor_floor_divide_frexp_full_like_ge_gt_le",
+    "bucket": "elementwise",
+    "ms_per_step": 0.257,
+    "calls_per_step": 33.0
+   },
+   {
+    "name": "triton_red_fused_abs_amax_1",
+    "bucket": "elementwise",
+    "ms_per_step": 0.2477,
+    "calls_per_step": 49.0
+   },
+   {
+    "name": "triton_poi_fused___lshift_____rshift____to_copy_abs_add_bitwise_and_clamp_div_frexp_ge_gt_index_mul_neg_ones_l",
+    "bucket": "elementwise",
+    "ms_per_step": 0.1667,
+    "calls_per_step": 16.0
+   },
+   {
+    "name": "triton_red_fused_abs_amax_3",
+    "bucket": "elementwise",
+    "ms_per_step": 0.1143,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "triton_poi_fused_add_0",
+    "bucket": "elementwise",
+    "ms_per_step": 0.0567,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "triton_poi_fused___lshift_____rshift____to_copy_add_clamp_div_ge_mul_sub_where_0",
+    "bucket": "elementwise",
+    "ms_per_step": 0.0516,
+    "calls_per_step": 16.0
+   },
+   {
+    "name": "triton_per_fused_abs_amax_bitwise_or_ge_2",
+    "bucket": "elementwise",
+    "ms_per_step": 0.0492,
+    "calls_per_step": 33.0
+   },
+   {
+    "name": "triton_per_fused___lshift_____rshift____to_copy_abs_add_amax_clamp_frexp_full_like_gt_ne_neg_ones_like_permute",
+    "bucket": "elementwise",
+    "ms_per_step": 0.0482,
+    "calls_per_step": 16.0
+   },
+   {
+    "name": "triton_red_fused_abs_amax_slice_2",
+    "bucket": "elementwise",
+    "ms_per_step": 0.047,
+    "calls_per_step": 16.0
+   },
+   {
+    "name": "_gumbel_sample_kernel",
+    "bucket": "sampling_logits",
+    "ms_per_step": 0.0468,
+    "calls_per_step": 1.0
+   }
+  ],
+  "profiled_wall_ms_per_step": 6.906
+ }
+}

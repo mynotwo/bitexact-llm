@@ -26,6 +26,7 @@ from vllm.config import VllmConfig
 from vllm.forward_context import get_forward_context
 from vllm.model_executor.layers.attention import Attention
 
+from bitexact.exact.consts import FT as EXACT_FT
 from bitexact.int8.consts import FT
 from bitexact.int8.model import IntLlama
 from bitexact.llama import rope_tables
@@ -47,7 +48,7 @@ def _check_on_output():
     def get_output(self):
         out = get(self)
         if MODEL is not None and bool(MODEL.flag):
-            raise OverflowError("integer bound violated (int8/model.py)")
+            raise OverflowError("integer bound violated (int8/model.py or exact)")
         return out
     get_output.bitexact = True
     AsyncOutput.get_output = get_output
@@ -58,8 +59,9 @@ def _extend_rope(c, model_dir, n):
     rule (llama3 scaling, float64, rounded once) and check the first rows are bit-identical."""
     if c["cos"].shape[0] >= n:
         return
+    ft = EXACT_FT if "lm.limbs" in c else FT       # exact mode keeps cos / sin at 30 bits
     with torch.device("cpu"):                 # vLLM sets a CUDA default device while it builds models
-        cos, sin = rope_tables(model_dir, n, FT)
+        cos, sin = rope_tables(model_dir, n, ft)
     m = c["cos"].shape[0]
     assert torch.equal(cos[:m], c["cos"]) and torch.equal(sin[:m], c["sin"]), "RoPE rows differ"
     c["cos"], c["sin"] = cos, sin
@@ -75,9 +77,14 @@ class BitExactLlamaForCausalLM(nn.Module):
         c = torch.load(path, map_location="cpu", weights_only=False)
         _extend_rope(c, vllm_config.model_config.model, vllm_config.model_config.max_model_len)
         dev = torch.device("cuda", torch.cuda.current_device())
-        self.m = IntLlama(c, dev, nl=int(getattr(cfg, "bitexact_nl", 2)),
-                          compiled=bool(int(os.environ.get("BITEXACT_COMPILE", "1"))))
-        self.m.ptab = tri_paged.weight_table(self.m.exp)
+        compiled = bool(int(os.environ.get("BITEXACT_COMPILE", "1")))
+        self.exact = "lm.limbs" in c                    # constants of exact mode (bf16 weights) or int8 mode
+        if self.exact:
+            from bitexact.vllm_plugin.exact_run import ExactEngine
+            self.m = ExactEngine(c, dev, compiled=compiled)
+        else:
+            self.m = IntLlama(c, dev, nl=int(getattr(cfg, "bitexact_nl", 2)), compiled=compiled)
+            self.m.ptab = tri_paged.weight_table(self.m.exp)
         # Plugin-side graphs only when vLLM's own are off (enforce_eager); otherwise vLLM captures
         # uniform decode batches through _captured_decode.
         self.use_graphs = bool(int(os.environ.get("BITEXACT_GRAPHS", "1"))) and \
@@ -130,6 +137,10 @@ class BitExactLlamaForCausalLM(nn.Module):
         N = input_ids.shape[0]
         bt = meta.block_table
         R = bt.shape[0]
+        if self.exact:                                     # one table row per request; rmap = row of each token
+            rmap = torch.arange(N, device=bt.device) // self.spec_q
+            return self.m.forward([a.kv_cache for a in self.attn], input_ids, positions, meta.slot_mapping[:N], bt,
+                                  rmap.clamp(max=R - 1))
         if R != N and self.spec_q > 1:
             # speculative decoding: uniform q = N / R query tokens per request (verify rows), each row attends
             # with its own position (causal) through its request's block table
@@ -144,6 +155,8 @@ class BitExactLlamaForCausalLM(nn.Module):
         meta = self._meta()
         if meta is not None and torch.cuda.is_current_stream_capturing():
             return self._captured_decode(input_ids, positions, meta)
+        if self.exact:
+            return self._forward_exact(input_ids, positions, meta)
         x = self.embed_input_ids(input_ids) if inputs_embeds is None else inputs_embeds.long()
         N = x.shape[0]
         plan = None if meta is None else paged.make_plan(meta, N, positions, self.qdim)
@@ -169,6 +182,33 @@ class BitExactLlamaForCausalLM(nn.Module):
         self.m._flag(x.abs().amax() >= 1 << 42)
         return x
 
+    def _forward_exact(self, input_ids, positions, meta):
+        """Any mix of decode and prefill tokens: every token is a row with its request's block-table row."""
+        kvs = None if meta is None else [a.kv_cache for a in self.attn]
+        N = input_ids.shape[0]
+        if meta is None:
+            return self.m.forward(None, input_ids, positions, input_ids, input_ids, input_ids)
+        qsl = meta.query_start_loc.cpu().tolist()
+        R = len(meta.seq_lens)
+        n = min(qsl[R], N)
+        if self.plan_log:                                   # same line as _log_plan (plan_stats.py)
+            sl = meta.seq_lens.cpu().tolist()
+            ql = [qsl[r + 1] - qsl[r] for r in range(R)]
+            with open(self.plan_log, "a") as f:
+                f.write(f"{n} {sum(q == 1 for q in ql)} {sum(q > 1 for q in ql)} "
+                        f"{sum(q > 1 and sl[r] - q > 0 for r, q in enumerate(ql))}\n")
+        if n == N == R and self.spec_q == 1 and qsl[R] == R:
+            # uniform decode: the device-only path vLLM captures; its warm-up run before each capture comes
+            # through here, so the compiled stages are built outside the capture
+            return self._captured_decode(input_ids, positions, meta)
+        rmap = torch.zeros(N, dtype=torch.long)
+        rmap[:n] = torch.repeat_interleave(torch.arange(R), torch.diff(torch.tensor(qsl[:R + 1])))[:n]
+        slot = torch.full((N,), -1, dtype=torch.long, device=input_ids.device)
+        slot[:n] = meta.slot_mapping[:n]
+        pos = positions.clone()
+        pos[n:] = 0
+        return self.m.forward(kvs, input_ids, pos, slot, meta.block_table, rmap.to(input_ids.device))
+
     def _check_late(self):
         """The bound-violation flag without a host sync: m.err (sticky, ORed on the device) is copied to pinned
         memory each step and read in that step's AsyncOutput.get_output (_check_on_output), after vLLM's own
@@ -180,6 +220,15 @@ class BitExactLlamaForCausalLM(nn.Module):
 
     def compute_logits(self, hidden_states):
         mm = self.m
+        if self.exact:
+            li = mm.logits(hidden_states.long())
+            self._check_late()
+            STASH.head, STASH.logits = None, li
+            STASH.strict = STASH.sampler is None or STASH.sampler.any_strict()
+            # strict requests need vLLM's real float logits; otherwise the sampler rewrites every row, so only
+            # the greedy token is computed (no float copy of the [rows, V] logits)
+            f, STASH.greedy = tri_logits.argmax_float(li, scale=2.0 ** -mm.FR, write=STASH.strict)
+            return f if STASH.strict else torch.empty(li.shape, dtype=torch.float32, device=li.device)
         if hidden_states.is_cuda and mm.nl == 2 and not mm.post_check:
             # LM-head GEMM, then one Triton pass over its output (tri_sample): no int64 logits are stored.
             pre = mm.sg.pre_norm(hidden_states.long(), mm.gf)
