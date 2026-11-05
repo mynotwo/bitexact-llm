@@ -26,6 +26,7 @@ from vllm.config import VllmConfig
 from vllm.forward_context import get_forward_context
 from vllm.model_executor.layers.attention import Attention
 
+from bitexact.exact.consts import FT as EXACT_FT
 from bitexact.int8.consts import FT
 from bitexact.int8.model import IntLlama
 from bitexact.llama import rope_tables
@@ -58,8 +59,9 @@ def _extend_rope(c, model_dir, n):
     rule (llama3 scaling, float64, rounded once) and check the first rows are bit-identical."""
     if c["cos"].shape[0] >= n:
         return
+    ft = EXACT_FT if "lm.limbs" in c else FT       # exact mode keeps cos / sin at 30 bits
     with torch.device("cpu"):                 # vLLM sets a CUDA default device while it builds models
-        cos, sin = rope_tables(model_dir, n, FT)
+        cos, sin = rope_tables(model_dir, n, ft)
     m = c["cos"].shape[0]
     assert torch.equal(cos[:m], c["cos"]) and torch.equal(sin[:m], c["sin"]), "RoPE rows differ"
     c["cos"], c["sin"] = cos, sin
