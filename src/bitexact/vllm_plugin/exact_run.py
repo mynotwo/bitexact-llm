@@ -16,7 +16,7 @@ from bitexact.exact.model import ExactLlama
 from bitexact.vllm_plugin import paged, tri_exact_attn, tri_paged
 from bitexact.vllm_plugin.exact_gemm import FusedLin
 
-FUSE_MAX_M = int(os.environ.get("BITEXACT_EXACT_FUSE_M", "256"))   # rows up to which the one-kernel linear is used
+FUSE_MAX_M = int(os.environ.get("BITEXACT_EXACT_FUSE_M", str(1 << 30)))   # rows up to which the one-kernel linear is used (0: never)
 
 
 class ExactEngine:
