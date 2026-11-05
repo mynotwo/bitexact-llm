@@ -173,8 +173,11 @@ def _gumbel(raw, lnt_ptr):
 
 
 @triton.jit
-def _head_kernel(c_ptr, m_ptr, fmsh_ptr, mant_ptr, e_ptr, out_ptr, pmax, pidx, M, V, CH, NCH,
-                 MODE: tl.constexpr, BLOCK: tl.constexpr):
+def _head_kernel(c_ptr, m_ptr, fmsh_ptr, mant_ptr, e_ptr, out_ptr, pmax, pidx, M, V, CH, NCH, gate_ptr,
+                 MODE: tl.constexpr, BLOCK: tl.constexpr, GATED: tl.constexpr):
+    if GATED:        # inside a CUDA graph: the host switches the pass on / off per replay (gate = 1: on)
+        if tl.load(gate_ptr) == 0:
+            return
     row = tl.program_id(0)
     ch = tl.program_id(1)
     fmsh = tl.load(fmsh_ptr)
@@ -270,7 +273,11 @@ def _noise_kernel(c_ptr, m_ptr, fmsh_ptr, mant_ptr, e_ptr, st_ptr, tab_ptr, lnt_
 
 
 @triton.jit
-def _comb_kernel(pmax, pidx, y, out_ptr, V, NCH, NB: tl.constexpr, ONEHOT: tl.constexpr):
+def _comb_kernel(pmax, pidx, y, out_ptr, V, NCH, gate_ptr, NB: tl.constexpr, ONEHOT: tl.constexpr,
+                 GATED: tl.constexpr):
+    if GATED:
+        if tl.load(gate_ptr) == 0:
+            return
     row = tl.program_id(0)
     k = tl.arange(0, NB)
     ok = k < NCH
@@ -286,15 +293,16 @@ def _comb_kernel(pmax, pidx, y, out_ptr, V, NCH, NB: tl.constexpr, ONEHOT: tl.co
 class Head:
     """The LM-head GEMM output and the constants that turn it into logits (segs.post's arguments)."""
 
-    def __init__(self, c, m, fmsh, mant, e):
+    def __init__(self, c, m, fmsh, mant, e, rows=None):
         self.c, self.m, self.fmsh, self.mant, self.e = c, m, fmsh, mant, e
         self.M, self.V = mant.shape[0], c.shape[1]
+        self.R = self.M if rows is None else rows         # rows used: the first R of the M the GEMM computed
 
     def logits(self):
-        """The int64 logits [M, V] (eager segs.post; only for hash logging)."""
+        """The int64 logits [R, V] (eager segs.post; only for hash logging)."""
         from bitexact.int8.segs import post
         from bitexact.intops import join_limbs
-        return post(join_limbs(self.c, self.M, 2), self.m, self.fmsh, self.mant, self.e, False)[0]
+        return post(join_limbs(self.c, self.M, 2), self.m, self.fmsh, self.mant, self.e, False)[0][:self.R]
 
 
 def _plan(M, V, block):
@@ -303,20 +311,24 @@ def _plan(M, V, block):
     return ch, triton.cdiv(V, ch)
 
 
-def head(h, mode, block=1024):
+def head(h, mode, block=1024, gate=None):
     """mode 'float': (float32 logits * 2^-16, first argmax); 'onehot': (-inf row with 0 at the argmax, argmax);
-    'none': (None, argmax)."""
-    M, V = h.M, h.V
+    'none': (None, argmax). gate: int32 device scalar; when given the kernels do nothing unless it is 1 (CUDA graph
+    replays that include this pass only on steps that need it)."""
+    M, V, R = h.M, h.V, h.R
     dev = h.c.device
-    ch, nch = _plan(M, V, block)
-    out = torch.empty(M, V, dtype=torch.float32, device=dev) if mode != "none" else h.c
-    pmax = torch.empty(M, nch, dtype=torch.long, device=dev)
+    ch, nch = _plan(R, V, block)
+    out = torch.empty(R, V, dtype=torch.float32, device=dev) if mode != "none" else h.c
+    pmax = torch.empty(R, nch, dtype=torch.long, device=dev)
     pidx = torch.empty_like(pmax)
-    y = torch.empty(M, dtype=torch.long, device=dev)
-    if M:
-        _head_kernel[(M, nch)](h.c, h.m, h.fmsh, h.mant, h.e, out, pmax, pidx, M, V, ch, nch,
-                               MODE={"none": 0, "float": 1, "onehot": 2}[mode], BLOCK=block, num_warps=8)
-        _comb_kernel[(M,)](pmax, pidx, y, out, V, nch, NB=triton.next_power_of_2(nch), ONEHOT=mode == "onehot")
+    y = torch.empty(R, dtype=torch.long, device=dev)
+    if R:
+        g = h.c if gate is None else gate
+        _head_kernel[(R, nch)](h.c, h.m, h.fmsh, h.mant, h.e, out, pmax, pidx, M, V, ch, nch, g,
+                               MODE={"none": 0, "float": 1, "onehot": 2}[mode], BLOCK=block, GATED=gate is not None,
+                               num_warps=8)
+        _comb_kernel[(R,)](pmax, pidx, y, out, V, nch, g, NB=triton.next_power_of_2(nch), ONEHOT=mode == "onehot",
+                           GATED=gate is not None)
     return (None if mode == "none" else out), y
 
 
@@ -365,18 +377,18 @@ def noisy(h, st, lnt, block=1024, out=None):
     """Gumbel-max token per row: st from row_state (CPU int64 [n, 6]) or int64 [n, 4] seed, t, tn, td (numpy, seeds
     and t below 2^32: the PCG state is derived in the kernel). Same tokens as sampling.sample(li, tn, td,
     gumbel(raw, ...)). out: vLLM's float logits [M, V]; if given it is left as -inf rows with 0 at the token."""
-    M, V = h.M, h.V
+    M, V, R = h.M, h.V, h.R
     dev = h.c.device
-    ch, nch = _plan(M, V, block)
+    ch, nch = _plan(R, V, block)
     st = _RING.put(st.numpy() if torch.is_tensor(st) else st, dev)
-    pmax = torch.empty(M, nch, dtype=torch.long, device=dev)
+    pmax = torch.empty(R, nch, dtype=torch.long, device=dev)
     pidx = torch.empty_like(pmax)
-    y = torch.empty(M, dtype=torch.long, device=dev)
-    if M:
+    y = torch.empty(R, dtype=torch.long, device=dev)
+    if R:
         fill = out is not None
-        _noise_kernel[(M, nch)](h.c, h.m, h.fmsh, h.mant, h.e, st, gpu_pcg._tables(dev), lnt, pmax, pidx, M, V,
+        _noise_kernel[(R, nch)](h.c, h.m, h.fmsh, h.mant, h.e, st, gpu_pcg._tables(dev), lnt, pmax, pidx, M, V,
                                 ch, nch, out if fill else h.c, BLOCK=block, SEEDED=st.shape[1] == 4, FILL=fill,
                                 num_warps=8)
-        _comb_kernel[(M,)](pmax, pidx, y, out if fill else h.c, V, nch, NB=triton.next_power_of_2(nch),
-                           ONEHOT=fill)
+        _comb_kernel[(R,)](pmax, pidx, y, out if fill else h.c, V, nch, h.c, NB=triton.next_power_of_2(nch),
+                           ONEHOT=fill, GATED=False)
     return y
