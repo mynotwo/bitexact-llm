@@ -63,24 +63,35 @@ def gemm(a, w, cfg):
     return c
 
 
-# (N, K) -> [(max_M, cfg)]: the shapes where this kernel beats both torch._int_mm and the gemm_skinny Triton
-# table by >= 5% (experiments/perf/p6_wgmma/RESULTS.md, microbench table). Config per row bucket.
+# (N, K) -> [(max_M, cfg)] with None = "stay on the gemm_skinny path". Buckets come from the sweep in
+# experiments/perf/p6_wgmma/sweep4.py (logs /data41/audreymao/perf6_20261105/wgmma/sw4_*.log, summarised by
+# mk_table.py): each bucket's cfg is >= 8% faster than the old path at every measured row count in the bucket,
+# with CUDA-graph timing and HBM-cold weights. Row counts are 2 x batch for decode (plugin limb buffers) and
+# tokens for prefill, which is why the buckets are cut where they are.
+# Shapes with no entry here lose at every row count (2048x2048, 3072x2048) and stay entirely on the old path.
 TABLE = {
-    # 1B (3072: qkv, 2048: o / down, 16384: gate_up, 128256: LM head)
-    (16384, 2048): [(256, (128, 64, 256, 4, 4, 4)), (_Min, (128, 128, 128, 16, 8, 5))],
-    (2048, 8192): [(256, (64, 64, 256, 4, 4, 4)), (_Min, (128, 128, 128, 4, 8, 5))],
-    (128256, 2048): [(384, (128, 128, 128, 16, 4, 5)), (_Min, (128, 128, 128, 16, 8, 5))],
-    # Llama-3.1-8B (6144: qkv, 4096: o / down, 28672: gate_up, 128256: LM head)
-    (6144, 4096): [(256, (128, 128, 128, 8, 4, 5)), (_Min, (128, 128, 128, 16, 8, 5))],
-    (4096, 4096): [(256, (128, 64, 256, 8, 4, 4)), (_Min, (128, 128, 128, 4, 8, 5))],
-    (28672, 4096): [(384, (128, 128, 128, 4, 4, 5)), (_Min, (128, 128, 128, 16, 8, 5))],
-    (4096, 14336): [(256, (128, 64, 256, 8, 4, 4)), (_Min, (128, 128, 128, 16, 4, 5))],
-    (128256, 4096): [(384, (128, 128, 128, 16, 4, 5)), (_Min, (128, 128, 128, 16, 8, 5))],
+    # 1B: 3072 qkv / 2048 o,down / 16384 gate_up / 128256 LM head
+    (16384, 2048): [(256, None), (512, (128, 128, 128, 8, 8, 5)), (_Min, (128, 128, 128, 16, 8, 5))],
+    (2048, 8192): [(256, None), (384, (64, 128, 256, 4, 8, 3)), (512, (64, 128, 128, 4, 8, 5)),
+                    (1024, (128, 128, 128, 4, 8, 5)), (1536, (64, 128, 256, 8, 8, 3)), (_Min, None)],
+    (128256, 2048): [(256, (128, 128, 128, 16, 8, 5)), (1536, (128, 128, 128, 8, 8, 5)),
+                      (_Min, (128, 128, 128, 16, 8, 5))],
+    # Llama-3.1-8B: 6144 qkv / 4096 o,down / 28672 gate_up / 128256 LM head
+    (6144, 4096): [(512, None), (1536, (128, 128, 128, 8, 8, 5)), (_Min, (128, 128, 128, 16, 8, 5))],
+    (4096, 4096): [(256, None), (384, (128, 128, 128, 4, 8, 5)), (512, (128, 128, 128, 8, 8, 4)), (768, None),
+                    (1024, (128, 128, 128, 16, 8, 5)), (2048, (128, 128, 128, 4, 8, 5)),
+                    (_Min, (128, 128, 128, 16, 8, 5))],
+    (28672, 4096): [(128, None), (512, (128, 128, 128, 4, 8, 5)), (1024, (128, 128, 128, 8, 8, 4)),
+                     (1536, (128, 128, 128, 16, 8, 4)), (_Min, (128, 128, 128, 16, 8, 5))],
+    (4096, 14336): [(256, None), (512, (128, 128, 128, 4, 8, 5)), (1024, (128, 128, 128, 16, 8, 5)),
+                     (2048, (128, 128, 128, 8, 8, 5)), (8192, (128, 256, 64, 16, 8, 4)),
+                     (_Min, (128, 128, 128, 4, 8, 4))],
+    (128256, 4096): [(128, None), (512, (128, 128, 128, 16, 8, 5)), (_Min, (256, 128, 64, 4, 8, 4))],
 }
 
 
 def pick(N, K, M):
-    """cfg for this (N, K, M), or None when the kernel is not the fastest choice."""
+    """cfg for this (N, K, M), or None when the old path is at least as fast."""
     for mx, cfg in TABLE.get((N, K), ()):
         if M <= mx:
             return cfg
