@@ -8,6 +8,8 @@ import torch
 import triton
 import triton.language as tl
 
+from . import gemm_sm90 as sm90
+
 
 @triton.jit
 def _k(a_ptr, w_ptr, c_ptr, R, N, K, BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr,
@@ -77,6 +79,10 @@ LARGE = {
 
 def int_mm(a, w):
     """Exact int32 a @ w.t(); skinny Triton kernel where the table has a faster config, else torch._int_mm."""
+    if a.is_contiguous() and w.is_contiguous():
+        cfg = sm90.pick(w.shape[0], w.shape[1], a.shape[0]) if sm90.sm90() else None
+        if cfg is not None:
+            return sm90.gemm(a, w, cfg)
     if LARGE_MIN <= a.shape[0] and a.shape[0] * w.shape[0] < 1 << 31 and a.is_contiguous() and w.is_contiguous():   # kernel offsets are int32
         for mx, cfg in LARGE.get((w.shape[0], w.shape[1]), ()):
             if a.shape[0] <= mx:
