@@ -34,7 +34,7 @@ export VLLM_ENABLE_V1_MULTIPROCESSING=0
 STAGES=${STAGES:-prof}; TREES=${TREES:-repo}; MAXWAIT=${MAXWAIT:-86400}
 O=${O:-$S/out}; mkdir -p $O; SUM=$O/SUMMARY_${STAGES// /_}_gpu$GPU.txt
 : "${GPU:?set GPU}"
-case " 0 1 2 3 " in *" $GPU "*) ;; *) echo "GPU $GPU not assigned"; exit 2;; esac
+case " 0 1 2 3 7 " in *" $GPU "*) ;; *) echo "GPU $GPU not assigned"; exit 2;; esac
 echo "$(date +%T) GPU $GPU, stages: $STAGES, trees: $TREES" | tee -a $SUM
 
 free() { [ "$(nvidia-smi -i $1 --query-gpu=memory.used --format=csv,noheader,nounits | tr -d ' ')" = 0 ] &&
