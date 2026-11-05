@@ -505,8 +505,12 @@ throughput 1.41x to 1.59x, to about 40% of stock vLLM. Seconds per RL step on on
 | vLLM batch-invariant sampler and rescoring | 14.0 / 13.2 | 5.4 / 5.1 | 3.2 / 2.9 | 5.3 / 5.2 |
 | integer, standalone engine | 28.2 | 15.1 | 7.7 | 5.3 |
 | integer, plugin | 15.1 / 14.3 | 5.7 / 5.3 | 4.0 / 3.8 | 5.4 / 5.2 |
+| integer, plugin, fused log p and prompt cache reuse (later session) | 12.6 / 11.9 | 5.6 / 5.2 | 1.6 / 1.5 | 5.3 / 5.2 |
 
-The standalone-engine row is from an earlier session on the same GPU type. The HF bf16 backward itself was not
+The last row is from a later session on the same GPU, where batch-invariant vLLM measured 13.5 / 13.4 s and the
+bf16 arm 11.3 / 10.8 s: rescoring now computes integer log p from the LM-head output in two Triton passes
+without storing int64 logits, and reuses the prompt's cached KV blocks (the prefix cache is reset after every
+weight update). All of these RL arms, including the integer ones, use int8-quantized weights. The standalone-engine row is from an earlier session on the same GPU type. The HF bf16 backward itself was not
 bit-reproducible on that host (two runs with the same rollouts gave different gradient norms at step 0), so
 whole training trajectories do not repeat exactly even when sampling and log p do.
 
