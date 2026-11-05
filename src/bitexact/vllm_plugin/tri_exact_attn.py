@@ -36,8 +36,8 @@ TSH = tl.constexpr(_FZ + 28 - _FT2)                  # t = rshc(zf * L2E, TSH)
 @triton.jit
 def _xtile(q_ptr, sh_ptr, qpos_ptr, bt_ptr, rmap_ptr, M, sqz, sqm, spz, sbt, NSPLIT,
            NHKV: tl.constexpr, DH: tl.constexpr, BN: tl.constexpr):
-    pz = tl.program_id(1).to(tl.int64)
-    sp = tl.program_id(2)
+    pz = tl.program_id(0).to(tl.int64)                 # (row, KV head): grid axis 0 holds up to 2^31 programs
+    sp = tl.program_id(1)
     r = pz // NHKV
     rm = tl.arange(0, BQ)
     rd = tl.arange(0, DH)
@@ -153,7 +153,7 @@ def attend(q, sh, qpos, cache, bt, rmap, lut, l2e, nsplit=None, bn=64, warps=4):
     num = new(R, HKV, M, HD, dtype=torch.long, device=q.device)
     den = new(R, HKV, M, 1, dtype=torch.long, device=q.device)
     mx = num if fused else torch.full((R, HKV, M), NEG.value, dtype=torch.long, device=q.device)
-    grid = (1, R * HKV, nsplit)
+    grid = (R * HKV, nsplit)
     common = (q.stride(1), q.stride(2), qpos.stride(0), cache.stride(0), cache.stride(1), cache.stride(2),
               bt.stride(0))
     if not fused:
