@@ -16,7 +16,8 @@ from bitexact.vllm_plugin import paged, tri_exact_attn, tri_paged
 
 class ExactEngine:
     def __init__(self, c, dev, compiled=False, gemm="triton"):
-        self.x = m = ExactLlama(c, dev, compiled=compiled, gemm=gemm)
+        with torch.device("cpu"):                 # vLLM sets a CUDA default device while it builds models
+            self.x = m = ExactLlama(c, dev, compiled=compiled, gemm=gemm)
         self.dev = m.dev
         self.L, self.H, self.HKV, self.HD, self.D = m.L, m.H, m.HKV, m.HD, m.D
         self.FR, self.ln, self.emb, self.sha = m.FR, m.ln, m.emb, m.sha
