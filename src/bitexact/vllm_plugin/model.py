@@ -224,8 +224,11 @@ class BitExactLlamaForCausalLM(nn.Module):
             li = mm.logits(hidden_states.long())
             self._check_late()
             STASH.head, STASH.logits = None, li
-            f, STASH.greedy = tri_logits.argmax_float(li, scale=2.0 ** -mm.FR)
-            return f
+            STASH.strict = STASH.sampler is None or STASH.sampler.any_strict()
+            # strict requests need vLLM's real float logits; otherwise the sampler rewrites every row, so only
+            # the greedy token is computed (no float copy of the [rows, V] logits)
+            f, STASH.greedy = tri_logits.argmax_float(li, scale=2.0 ** -mm.FR, write=STASH.strict)
+            return f if STASH.strict else torch.empty(li.shape, dtype=torch.float32, device=li.device)
         if hidden_states.is_cuda and mm.nl == 2 and not mm.post_check:
             # LM-head GEMM, then one Triton pass over its output (tri_sample): no int64 logits are stored.
             pre = mm.sg.pre_norm(hidden_states.long(), mm.gf)
