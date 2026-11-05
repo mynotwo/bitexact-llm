@@ -30,11 +30,11 @@ class ExactEngine:
         self.fl = torch.zeros(1, dtype=torch.int32, device=m.dev)             # flags set by the fused linears
         self.fused = {}
         if m.dev.type == "cuda" and FUSE_MAX_M:
-            mk = lambda lin: FusedLin(lin)
-            self.fused = {"lm": mk(m.lm)}
-            for i, ly in enumerate(m.layers):
-                for n in ("wqkv", "wo", "wgu", "wd"):
-                    self.fused[i, n] = mk(ly[n])
+            with torch.device("cpu"):
+                self.fused = {"lm": FusedLin(m.lm)}
+                for i, ly in enumerate(m.layers):
+                    for n in ("wqkv", "wo", "wgu", "wd"):
+                        self.fused[i, n] = FusedLin(ly[n])
 
     def _lin(self, key, lin, q, sh, checked):
         """(y, flag-or-None) when the fused kernel applies (few rows), else (None, (C, rs, d, g))."""
