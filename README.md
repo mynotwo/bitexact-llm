@@ -353,28 +353,25 @@ Throughput on one H800 (GPU empty before the run; 128 input and 128 output token
 
 | Configuration (output tok/s, T = 0) | Batch 1 | Batch 32 | Batch 128 |
 |---|---|---|---|
-| vLLM bf16, CUDA graphs (stock) | 605 | 15,991 | 33,771 |
-| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 214 | 7,515 | 33,387 |
+| vLLM bf16, CUDA graphs (stock) | 612 | 16,128 | 33,831 |
+| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 214 | 7,549 | 34,487 |
 | integer plugin before the changes below | 235 | 4,414 | 9,341 |
 | integer plugin after the four changes below | 388 | 9,570 | 23,978 |
 | integer plugin after three further changes (later session) | 446 | 10,988 | 27,176 |
-| integer plugin, current (five more changes, third session) | 529 | 13,330 | 29,569 |
+| integer plugin after five more changes (third session) | 529 | 13,330 | 29,569 |
+| integer plugin, current | 548 | 14,640 | 33,463 |
 
-Each cell of the first four rows is the median of three timed runs on the same GPU in one session, alternating
-between configurations. The last row is the median of five runs from a later session on the same GPU type. In that session the
-previous plugin measured 380 / 9,469 / 23,505 and the batch-invariant vLLM row 212 / 7,418 / 32,297 tok/s, so the
-three further changes gave 1.17x / 1.16x / 1.16x, and the plugin reaches 84% of batch-invariant vLLM at batch 128 (73% before).
-Other users' jobs loaded the host during that session, and runs of one configuration spread by up to 10% at T = 0. At T = 1 the current
-plugin gives 441 / 9,398 / 18,024 tok/s; that step is bound by host-side work, so the GPU savings below barely show. vLLM's batch-invariant mode is the fair deterministic baseline,
-but only with `TRITON_ATTN`: with the default FlashAttention backend its logits for a prompt run alone
-differed from the same prompt inside batches of 32 and 128 at 104 and 197 of 512 positions. It guarantees
-batch invariance on one GPU and software stack, not agreement across GPU types or CPUs.
+The `current` row and the two vLLM rows are the median of five runs per cell in one session on one GPU, cycling
+exact / int8 / bf16 / batch-invariant; the four earlier plugin rows come from three earlier sessions and are kept
+for the speedup history. So the plugin is 2.6x / 1.9x batch-invariant vLLM at batch 1 / 32, 97% of it at batch 128,
+and 99% of stock vLLM at batch 128. Runs of one configuration spread by at most 2.7% at batch 32 and 128, and by at
+most 6.9% at batch 1, where a step is a few milliseconds. vLLM's batch-invariant mode is the fair deterministic
+baseline, but only with `TRITON_ATTN`: with the default FlashAttention backend its logits for a prompt run alone
+differed from the same prompt inside batches of 32 and 128 at 104 and 197 of 512 positions. It guarantees batch
+invariance on one GPU and software stack, not agreement across GPU types or CPUs.
 
-The current row is the median of five runs in a third session, alternating with the previous plugin, which
-measured 451 / 11,038 / 29,190 there (T = 0); stock vLLM measured 610 / 16,148 / 33,525 and batch-invariant vLLM
-215 / 7,522 / 34,825. So the plugin is 2.5x / 1.8x batch-invariant vLLM at batch 1 / 32 and 85% of it at batch 128.
-At T = 1 it gives 510 / 12,224 / 28,688 tok/s (previous plugin 447 / 10,087 / 20,319), so most of the T = 1
-host overhead is gone.
+The five-more-changes session measured T = 1 at 510 / 12,224 / 28,688 tok/s (previous plugin 447 / 10,087 /
+20,319), so most of the T = 1 host overhead was gone by then.
 
 Four changes, all verified bit-identical (14/14 suite runs with 0 differing tokens or logits hashes, hash
 files byte-equal to the previous commit), raised plugin throughput 1.65x / 2.17x / 2.57x:
@@ -429,14 +426,34 @@ dumps identical) plus the 8B and speculative-decoding checks below:
   (0.4x to 0.9x), and 0.4x to 1.0x at batch 32 and 128 in a later run (2 draft tokens are better than 4 but still
   not faster than none), so it is off unless the user sets `speculative_config`.
 
-8B throughput, one H800 (T = 0, median of five runs alternating between configurations in one session, tok/s):
+Three later lanes moved the `current` row of the first table:
+
+- The LM head, final norm and greedy pass now run inside the decode CUDA graph, with a device gate that makes the
+  pass free for the steps that do not need it (`experiments/perf/p6_graphlogits/RESULTS.md`). 1B went from
+  13,873 to 15,928 tok/s at batch 32 (T = 0) and 30,104 to 33,285 at batch 128 (1.15x and 1.11x). With its
+  opt-in self-check on (`BITEXACT_GL_CHECK=1`), which recomputes norm, LM-head GEMM and greedy pass from the hidden
+  states and asserts `torch.equal` on all three at every graph replay, 254 checks ran per run at batch 1 / 32 / 128
+  and T = 0 / 1, 254 of 254 with the gate on in the T = 0 runs and with the gate off in the T = 1 ones, and none
+  fired.
+- An sm90 wgmma + TMA int8 GEMM with a per-shape dispatch table, described under 8B below.
+- The exact-mode fused elementwise kernels and the greedy-logits fix, described in the exact-mode section below.
+
+The `current` row is a later session than the 529 / 13,330 / 29,569 row above, so the difference between them
+(+3.6% / +9.8% / +13.2%) mixes those changes with session-to-session drift and is not an A/B. Read each lane's own
+run-paired ratio, not its absolute level: the graphlogits session, for instance, read 13,873 at batch 32 where this
+gives 14,640.
+
+8B throughput, one H800 (128 in / 128 out, T = 0, tok/s). The `current` row and the two vLLM rows are the median
+of five runs per cell in one session, cycling exact / int8 / bf16 / batch-invariant (the exact row is quoted in prose
+in the exact-mode section below); the `before` row is the base those two changes were measured against, in their own
+session:
 
 | Configuration | Batch 1 | Batch 32 | Batch 128 |
 |---|---|---|---|
-| vLLM bf16, CUDA graphs (stock) | 152 | 4,526 | 14,097 |
-| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 50 | 1,753 | 10,672 |
+| vLLM bf16, CUDA graphs (stock) | 152 | 4,533 | 14,064 |
+| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 50 | 1,745 | 10,675 |
 | integer plugin, Llama-3.1-8B, before the two changes below | 153 | 4,028 | 8,266 |
-| integer plugin, Llama-3.1-8B, current | 175 | 4,811 | 9,933 |
+| integer plugin, Llama-3.1-8B, current | 180 | 4,978 | 10,781 |
 
 Two later changes, verified bit-identical (1B suite hash files byte-equal to the previous commit; 8B equal to the
 `IntLlama` reference in every token and logits hash; 8B batch invariant with graphs and eager), sped up 8B by
@@ -448,12 +465,29 @@ Two later changes, verified bit-identical (1B suite hash files byte-equal to the
   projection at 256 rows, and the LM head except at 65 to 128 rows). GEMM time per 8B step at batch 128 fell from
   6.48 to 5.55 ms.
 
-At batch 128 the 8B step takes 11.8 ms (attention 2.6, gate/up GEMM 2.1, other GEMMs 2.7, fused kernels 1.2). The
-plugin is now faster than stock vLLM at batch 1 and 32 and reaches 93% of batch-invariant vLLM at batch 128.
-8B long-context decode at S = 16,384 takes 7.11 ms per step at batch 1 and 19.47 ms at batch 8.
+A later lane replaced the int8 GEMM with an sm90 wgmma + TMA kernel and a per-shape dispatch table
+(`experiments/perf/p6_wgmma/RESULTS.md`). Its own A/B is 8B decode kernel time 11.03 -> 10.39 ms at batch 128
+(5.8%), which is 10,303.5 -> 10,776.5 tok/s end to end there; 8B batch 1 and 32 stayed flat (180.3 vs 179.9 and
+4,959.8 vs 4,989.0), and 1B prefill rose 6.2% / 6.0% / 8.5% at 64 x 256 / 512 / 1024. The rest of the gap between
+the 175 / 4,811 / 9,933 those two changes measured and the current row is session drift: the wgmma A/B session
+already read 180 / 4,960 / 10,304 for the same tree as `before`. Two cells are slower in the microbench and were
+left that way: `gu1` at 8,192 rows (0.71x) and `gu8` at 256 rows (0.63x). The same lane costs one 1B batch-32 run
+about 27 ms once, on the first call inside the prefix-caching path (steady state within 1.4% of base).
 
-Measurements, profiles and scripts are in `experiments/perf/` (`p2_merge`, `p3_merge` and `p4_merge` RESULTS.md
-for the combined runs).
+At batch 128, the 8B decode step of both trees in the same profiled protocol (prefix caching off, profiler on, GPU 2)
+goes from 11.75 to 11.27 ms, kernel time 11.23 to 10.46 ms over the same 388 kernels per step. The GEMM is the
+change: all 33 calls per step take 3.32 ms of cutlass s8 on `base` and 2.74 ms of `_wgmma` on the merged tree (18%),
+and the LM-head GEMM moves with them, out of the `sampling_logits` bucket (0.54 to 0.11) into `gemm_bf16`, because
+it now runs inside the graph. Attention 2.72 to 2.65 ms, elementwise 0.78 to 0.77. The plugin is now 1.2x and 1.1x
+stock vLLM at batch 1 and 32, reaches 77% of it at batch 128, and is level with batch-invariant vLLM at batch 128
+(10,781 against 10,675 tok/s).
+
+8B long-context decode at S = 16,384 takes 7.11 ms per step at batch 1 and 19.47 ms at batch 8, both from
+`experiments/perf/p4_merge/RESULTS.md`, the session before the three lanes above (each of their A/Bs is at the batch
+sizes in this section).
+
+Measurements, profiles and scripts are in `experiments/perf/` (`p2_merge`, `p3_merge`, `p4_merge`, `p6_wgmma`,
+`p6_graphlogits`, `p8_exactfuse` and `p9_merge` RESULTS.md for the combined runs).
 
 Long-context decode, one H800, plugin graph replay, S = 16,384 (`tests/vllm/longctx_step.py`, CUDA event median):
 
@@ -465,23 +499,28 @@ Long-context decode, one H800, plugin graph replay, S = 16,384 (`tests/vllm/long
 Exact mode in the plugin. The plugin also serves exact mode (the original bf16 weights, bit for bit) when given
 exact-mode constants. Its output equals the standalone exact engine in every token and int64 logits hash on the
 14-run suite (1B) and on 192 rows at batch 1 / 32 / 128 (8B). Each linear runs as one Triton kernel that does the
-9 limb products with int32 accumulators, joins them in int64 and adds the sparse residual. The elementwise work
-still runs as torch.compile regions (about 600 kernels per step). 1B, 128 in / 128 out, T = 0, tok/s, median of
-five runs on one H800, same session:
+9 limb products with int32 accumulators, joins them in int64 and adds the sparse residual. The elementwise work now
+runs as fused Triton kernels (227 kernels per prefill step instead of 642, 218 per decode step instead of 633). 1B,
+128 in / 128 out, T = 0, tok/s, median of five runs on one H800, cycling exact / int8 / bf16 / batch-invariant in
+one session:
 
 | Configuration | Batch 1 | Batch 32 | Batch 128 |
 |---|---|---|---|
-| vLLM bf16, CUDA graphs (stock) | 612 | 16,001 | 33,651 |
-| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 213 | 7,542 | 34,495 |
-| integer plugin, exact mode (original bf16 weights) | 212 | 5,300 | 10,628 |
-| integer plugin, int8 mode (quantized weights) | 549 | 13,830 | 30,481 |
-| standalone exact engine | 223 | 3,321 | 5,615 |
+| vLLM bf16, CUDA graphs (stock) | 612 | 16,128 | 33,831 |
+| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 214 | 7,549 | 34,487 |
+| integer plugin, exact mode (original bf16 weights) | 254 | 6,801 | 13,940 |
+| integer plugin, int8 mode (quantized weights) | 548 | 14,640 | 33,463 |
+| standalone exact engine (earlier session) | 223 | 3,321 | 5,615 |
 
-So serving the unmodified float model bit-exactly costs about 3x against stock vLLM: it matches batch-invariant
-vLLM at batch 1 and reaches 70% and 31% of it at batch 32 and 128. At batch 128 a decode step takes 10.7 ms:
-linears 4.9, elementwise 3.6, sampling and LM head 1.3, attention 0.7. The throughput numbers in the sections
-above are for int8 mode, a quantized model. 8B exact mode gives 59 / 956 / 1,124 tok/s (int8 mode 180 / 4,798 /
-6,735 in the same run; GEMM tiles not tuned for 8B).
+So serving the unmodified float model bit-exactly costs about 2.4x against stock vLLM: it is 1.19x batch-invariant
+vLLM at batch 1 and reaches 90% and 40% of it at batch 32 and 128. A profiled batch-128 decode step (prefix caching
+off, as the profiler runs it, which costs `bench.py` a third of its throughput on this model) takes 8.4 ms against
+10.9, its kernel time 8.1 against 10.5: linears 4.9, sampling and LM head 1.2, elementwise 1.0, attention 0.7,
+the rest 0.2. The elementwise bucket is the one that moved (3.55 to 1.04 ms). The prefill of the 128 x 128 batch
+moved with it: its GPU kernel time fell from 957 to 667 ms and its host enqueue from 28.2 to 12.1 ms, over the same
+642 -> 227 kernels. The throughput numbers in the sections above are for int8 mode, a quantized model. 8B exact
+mode gives 66 / 1,363 / 3,088 tok/s (int8 mode 180 / 4,978 / 10,781 in the same run, same n = 5 medians), 2.7x
+over the 1,124 tok/s batch 128 measured before the fused elementwise kernels and the 8B GEMM table.
 
 Plugin limitations:
 
@@ -517,8 +556,12 @@ detected). Integer sampling with a bf16 trainer and no correction collapsed in 2
 The integer arm runs on the vLLM plugin in-process: after each optimizer step the new int8 weights are copied
 into the live model (load-time bounds are re-checked first; a failure raises before anything is written), and a
 scoring request returns exact integer log p from the prefill pass. Rollouts and log p are bit-identical to the
-standalone integer engine. A fused prefill path (four kernels per layer instead of about 28) raised 1B prefill
-throughput 1.41x to 1.59x, to about 40% of stock vLLM. Seconds per RL step on one H800, same session (two runs):
+standalone integer engine. Run as a fourth arm at 4 seeds, it reached 0.150 ± 0.017 at step 200 against 0.177 ±
+0.024 for the standalone integer arm and 0.181 ± 0.015 for batch-invariant vLLM, inside one seed SD of each (Welch
+p 0.13 against the integer arm); the plugin changes nothing that is trained on, so the rest of the spread is the
+H800 vs H100 backward and the non-reproducible HF bf16 backward. A fused prefill path (four kernels per layer
+instead of about 28) raised 1B prefill throughput 1.41x to 1.59x, to about 40% of stock vLLM. Seconds per RL step
+on one H800, same session (two runs):
 
 | Arm | Step | Sampling | Rescoring | Trainer |
 |---|---|---|---|---|
