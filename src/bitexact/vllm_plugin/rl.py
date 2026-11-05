@@ -9,8 +9,8 @@ and teacher-forced integer scoring inside the prefill pass.
                          at 2^-40); a pure function of the logits row.
   install()              (in the process that runs the engine, V1 multiprocessing off) enables
                            - RL.lp: list collecting (seeds, ts, log p) of every sampled row (sampler.py hook);
-                           - scoring requests: SamplingParams(max_tokens=1, skip_reading_prefix_cache=True,
-                             extra_args={"bitexact_score_from": P}) over prompt + response (P = prompt length)
+                           - scoring requests: SamplingParams(max_tokens=1, extra_args={"bitexact_score_from": P})
+                             over prompt + response (P = prompt length; the prefix cache is read up to token P - 1)
                              get int_logp of tokens P..L-1 in RL.scores[request_id] (device float64), computed
                              from the same prefill hidden states with model.m.logits.
 """
@@ -150,9 +150,35 @@ def install():
             _score_rows(hidden_states, input_batch, all_token_ids, prompt_lens)
         return out
 
+    from vllm.v1.core.kv_cache_manager import KVCacheManager
+    gcb = KVCacheManager.get_computed_blocks
+
+    def get_computed_blocks(self, request):
+        # Scoring requests read the prefix cache up to the first scored row only (tokens [0, P - 1)): the prompt's
+        # blocks, cached by generation or by an earlier request, hold the same integers as a fresh prefill, and the
+        # rows P - 1.. are always computed. A hit beyond P - 1 would skip rows that have to be scored.
+        sp = request.sampling_params
+        ex = (sp.extra_args or {}) if sp is not None else {}
+        if "bitexact_score_from" not in ex or not self.enable_caching or request.skip_reading_prefix_cache:
+            return gcb(self, request)
+        blocks, n, _ = self.coordinator.find_longest_cache_hit(request.block_hashes, int(ex["bitexact_score_from"]) - 1)
+        return self.create_kv_cache_blocks(blocks), n, 0
+
+    KVCacheManager.get_computed_blocks = get_computed_blocks
     PromptLogprobsWorker.add_request = add_request
     PromptLogprobsWorker.compute_prompt_logprobs = compute_prompt_logprobs
     RL.installed = True
+
+
+def _chunk_logp(mm, h, t):
+    """int_logp of tokens t under the logits of hidden rows h. On CUDA (nl = 2) two Triton passes over the LM-head
+    GEMM output (tri_logp), no int64 logits; otherwise int_logp on mm.logits (same integers)."""
+    if h.is_cuda and mm.nl == 2 and not mm.post_check:
+        from bitexact.vllm_plugin import tri_logp, tri_sample
+        pre = mm.sg.pre_norm(h, mm.gf)
+        w, mw, fmsh = mm.lm
+        return tri_logp.logp(tri_sample.Head(mm._gemm(pre[0], w), mw, fmsh, pre[1], pre[2]), t, mm.ln)
+    return int_logp(mm.logits(h), t, mm.ln)
 
 
 @torch.no_grad()
@@ -181,8 +207,7 @@ def _score_rows(hidden_states, ib, all_token_ids, prompt_lens, chunk=1024):
         return
     h = hidden_states[torch.cat(rows)].long()
     t = torch.cat(toks).long()
-    lp = torch.cat([int_logp(MODEL.m.logits(h[a:a + chunk]), t[a:a + chunk], MODEL.m.ln)
-                    for a in range(0, h.shape[0], chunk)])
+    lp = torch.cat([_chunk_logp(MODEL.m, h[a:a + chunk], t[a:a + chunk]) for a in range(0, h.shape[0], chunk)])
     MODEL._check_late()
     o = 0
     for rid, off, n in jobs:

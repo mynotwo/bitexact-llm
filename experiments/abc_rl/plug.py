@@ -68,7 +68,7 @@ class PlugEngine:
         from vllm.inputs import TokensPrompt
         from bitexact.vllm_plugin.rl import RL
         n = len(prompts)
-        sp = [self._sampling(temperature=1.0, seed=1, max_tokens=1, skip_reading_prefix_cache=True,
+        sp = [self._sampling(temperature=1.0, seed=1, max_tokens=1,
                              extra_args={"bitexact_score_from": len(p)}) for p in prompts]
         outs = self.llm.generate([TokensPrompt(prompt_token_ids=p + r) for p, r in zip(prompts, resps)], sp,
                                  use_tqdm=False)
