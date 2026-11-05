@@ -56,6 +56,13 @@ def quant(P, eps):
     return q.to(torch.int32), sh
 
 
+def norm_quant(x, gm, ge, err):
+    """rms + ndiv + quant as one region (what Segs.norm_q runs as three stages)."""
+    r, er = ops.rms(x)
+    q, sh = ops.quant(ops.div_round(x * gm, ge - FR - er[:, None] + ops.FN, r[:, None]), -ops.FN)
+    return q.to(torch.int32), sh, err | (x.abs().amax() >= 1 << 40)
+
+
 def _rope_full(x, c, s):
     hd = x.shape[-1]
     x1, x2 = x[..., :hd // 2], x[..., hd // 2:]
@@ -122,12 +129,13 @@ def quant_silu(P, ok, err):
 
 
 STAGES = ("lin_y", "lin_add", "rms", "ndiv", "quant", "lin_rope", "q_group", "softmax", "attn_div",
-          "lin_silu", "quant_silu", "rope_y", "add_y", "silu_y")
+          "lin_silu", "quant_silu", "rope_y", "add_y", "silu_y", "norm_quant")
 
 
 class Segs:
-    def __init__(self, compiled=False, dm=(H, HKV, HD)):
+    def __init__(self, compiled=False, dm=(H, HKV, HD), one_region=False):
         self.dm = dm
+        self.one_region = one_region                             # norm_q as a single compiled region
         self.l2e = ops.L2E28_HD[dm[2]]                           # KeyError: unsupported head_dim
         if compiled:
             import torch._dynamo
@@ -136,6 +144,8 @@ class Segs:
         self.s = type("S", (), {n: staticmethod(wrap(globals()[n])) for n in STAGES})
 
     def norm_q(self, x, gm, ge, err):
+        if self.one_region:
+            return self.s.norm_quant(x, gm, ge, err)
         r, er, err = self.s.rms(x, err)
         q, sh = self.s.quant(self.s.ndiv(x, gm, ge, r, er), -ops.FN)
         return q, sh, err

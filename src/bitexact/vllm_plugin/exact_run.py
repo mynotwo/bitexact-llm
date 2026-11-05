@@ -27,6 +27,8 @@ class ExactEngine:
         self.L, self.H, self.HKV, self.HD, self.D = m.L, m.H, m.HKV, m.HD, m.D
         self.FR, self.ln, self.emb, self.sha = m.FR, m.ln, m.emb, m.sha
         self.l2e = ops.L2E28_HD[m.HD]
+        if os.environ.get("BITEXACT_EXACT_ONEREGION", "0") == "1":
+            m.sg.one_region = True
         self.fl = torch.zeros(1, dtype=torch.int32, device=m.dev)             # flags set by the fused linears
         self.fused = {}
         if m.dev.type == "cuda" and FUSE_MAX_M:
