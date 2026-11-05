@@ -212,7 +212,28 @@ C_plugin runs C's sampling and teacher-forced rescoring in the vLLM plugin with 
 Same H800 GPU, same session, 20-step pilots, median of steps 2-19, shared host.
 
 - Rollouts, sampler log p and rescoring log p equal `intq.generate` / `intq.score`: 0 differ at step 0 and after 3 weight updates; sampler vs rescoring 0 differ. A bound violation at update time raises before any weight is written.
-- GSM8K step-200 integer accuracy, 2 seeds: 0.172 and 0.132 (C: 0.177 +- 0.024, range [0.148, 0.204]). Seed 2 is below C's range and within seed noise; two seeds cannot separate them.
+- GSM8K step-200 integer accuracy, 4 seeds (seeds 3-4 run on H800 GPUs 1 and 2, same code and config as seeds 1-2): 0.172, 0.132, 0.156, 0.142.
+
+Seed comparison, C_plugin (H800) vs C (H100) vs D (H800), 4 seeds each, mean ± SD [min, max]. Tests are two-sided, Welch t and an exact permutation test over all 70 label splits.
+
+| arm | acc, step 200 | acc, mean of steps 150-200 | train reward, last 20 steps |
+|---|---|---|---|
+| C_plugin | 0.150 ± 0.017 [0.132, 0.172] | 0.149 ± 0.024 [0.125, 0.176] | 0.146 ± 0.018 [0.130, 0.162] |
+| C | 0.177 ± 0.024 [0.148, 0.204] | 0.173 ± 0.024 [0.151, 0.204] | 0.153 ± 0.026 [0.130, 0.185] |
+| D | 0.181 ± 0.015 [0.166, 0.202] | 0.181 ± 0.016 [0.166, 0.203] | 0.166 ± 0.017 [0.146, 0.185] |
+
+| comparison | metric | difference | Welch p | permutation p |
+|---|---|---|---|---|
+| C_plugin - C | acc, step 200 | -0.026 | 0.13 | 0.14 |
+| C_plugin - C | acc, mean 150-200 | -0.024 | 0.21 | 0.26 |
+| C_plugin - C | train reward | -0.006 | 0.70 | 0.69 |
+| C_plugin - D | acc, step 200 | -0.031 | 0.04 | 0.06 |
+| C_plugin - D | acc, mean 150-200 | -0.032 | 0.07 | 0.09 |
+| C_plugin - D | train reward | -0.020 | 0.16 | 0.20 |
+| C - D | acc, step 200 | -0.005 | 0.77 | 0.80 |
+
+C_plugin vs C: no difference detected (p 0.13-0.70). C_plugin is lower than C and D in every mean, by 0.02-0.03 accuracy, which is the size of one seed SD; with 4 seeds per arm a difference of that size is not detectable. C_plugin vs D on step-200 accuracy is borderline (Welch p 0.04, permutation p 0.06; not significant after three comparisons and nine tests, and 0.06-0.09 on the 150-200 mean). C_plugin's rollouts and log p equal C's bit for bit, so the plugin does not change what is trained on; the remaining differences are the GPU (H800 vs H100) and the HF bf16 backward, which is not reproducible run to run. Every C_plugin seed except seed 1 is below C's mean; the cause of a possible small shift (for example H800 vs H100 backward kernels) is not isolated. C seed 2 on H800 (below) tests GPU alone.
+
 - The HF bf16 backward is not bit-reproducible on this host (two C runs with identical rollouts differ in grad norm at step 0), so trajectories cannot be matched exactly.
 
 ## Deviations from the design
