@@ -462,6 +462,27 @@ Long-context decode, one H800, plugin graph replay, S = 16,384 (`tests/vllm/long
 | 1 | 1.97 | 75 ms |
 | 8 | 5.21 | 75 ms |
 
+Exact mode in the plugin. The plugin also serves exact mode (the original bf16 weights, bit for bit) when given
+exact-mode constants. Its output equals the standalone exact engine in every token and int64 logits hash on the
+14-run suite (1B) and on 192 rows at batch 1 / 32 / 128 (8B). Each linear runs as one Triton kernel that does the
+9 limb products with int32 accumulators, joins them in int64 and adds the sparse residual. The elementwise work
+still runs as torch.compile regions (about 600 kernels per step). 1B, 128 in / 128 out, T = 0, tok/s, median of
+five runs on one H800, same session:
+
+| Configuration | Batch 1 | Batch 32 | Batch 128 |
+|---|---|---|---|
+| vLLM bf16, CUDA graphs (stock) | 612 | 16,001 | 33,651 |
+| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 213 | 7,542 | 34,495 |
+| integer plugin, exact mode (original bf16 weights) | 212 | 5,300 | 10,628 |
+| integer plugin, int8 mode (quantized weights) | 549 | 13,830 | 30,481 |
+| standalone exact engine | 223 | 3,321 | 5,615 |
+
+So serving the unmodified float model bit-exactly costs about 3x against stock vLLM: it matches batch-invariant
+vLLM at batch 1 and reaches 70% and 31% of it at batch 32 and 128. At batch 128 a decode step takes 10.7 ms:
+linears 4.9, elementwise 3.6, sampling and LM head 1.3, attention 0.7. The throughput numbers in the sections
+above are for int8 mode, a quantized model. 8B exact mode gives 59 / 956 / 1,124 tok/s (int8 mode 180 / 4,798 /
+6,735 in the same run; GEMM tiles not tuned for 8B).
+
 Plugin limitations:
 
 - Single GPU only (TP = 1, PP = 1). Speculative decoding tested only with vLLM's `ngram` proposer, and checked
