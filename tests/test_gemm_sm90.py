@@ -11,7 +11,7 @@ def _sm90():
 def _cases(N, K):
     """Every dispatch bucket, its edges, and ragged M."""
     from bitexact.int8.gemm_sm90 import TABLE
-    ms = {1, 7, 130, 257, 32769}
+    ms = {17, 33, 130, 257, 32769}   # torch._int_mm (the reference) needs M > 16
     for mx, _ in TABLE[(N, K)]:
         ms |= {mx, mx + 1} if mx < 1 << 30 else set()
     return sorted(ms)

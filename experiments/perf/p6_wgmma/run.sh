@@ -13,7 +13,7 @@ sync)
   ssh $HOST "mkdir -p $S/$T"
   git -C "$LOCAL" archive $BR | ssh $HOST "tar -x -C $S/$T"
   ssh $HOST "echo $(git -C "$LOCAL" rev-parse --short $BR) > $S/$T/SYNCED_COMMIT"
-  ssh $HOST "mkdir -p $S/p6" && scp -q "$LOCAL/experiments/perf/p6_wgmma/"*.py $HOST:$S/p6/ && scp -q "$LOCAL/experiments/perf/p6_wgmma/run.sh" $HOST:$S/ ; exit ;;
+  ssh $HOST "mkdir -p $S/p6" && scp -q "$LOCAL/experiments/perf/p6_wgmma/"*.py "$LOCAL/experiments/perf/p5_prefill/"{bench_prefill.py,prof_vllm.py,buckets.py} "$LOCAL/experiments/perf/p4_merge/tokens.py" $HOST:$S/p6/ && scp -q "$LOCAL/experiments/perf/p6_wgmma/run.sh" $HOST:$S/ ; exit ;;
 start)
   st=${STAGES:-bench}; L=$S/go_${st// /_}_gpu${GPU:?set GPU}.log
   ssh $HOST "export STAGES='$st' GPU='$GPU' TREES='${TREES:-}' REPS='${REPS:-3}' O='${O:-}'; R=$S/run_\$\$.sh; cp $S/run.sh \$R; nohup bash \$R go > $L 2>&1 < /dev/null & echo started $L"; exit ;;
@@ -93,14 +93,14 @@ tokcmp() { D=$O/tokens; R=${CMPA:-base}; N=${CMPB:-repo}
 e2e() { D=$O/e2e; mkdir -p $D
   T=${T2:-0 1}; B=${BS:-1 32 128}
   for rep in $(seq 1 ${REPS:-5}); do for b in $B; do for t in $TREES; do for tp in $T; do
-    run $D/${t}_b${b}_t${tp}_r$rep.log 1800 $t $PY $EP/bench.py --model $MODEL --batch $b --temp $tp --tag ${t}_b${b}_t${tp}_r$rep
+    run $D/${t}_b${b}_t${tp}_r$rep.log 1800 $t $PY tests/vllm/bench.py --model $MODEL --batch $b --temp $tp --tag ${t}_b${b}_t${tp}_r$rep
   done; done; done; done
   grep -H "^RESULT" $D/*.log | cut -c1-300 | tee -a $SUM; }
 
 # 8B end-to-end decode bench
 e2e8() { D=$O/e2e8; mkdir -p $D
   for rep in $(seq 1 ${REPS:-5}); do for b in ${BS:-1 32 128}; do for t in $TREES; do
-    run $D/${t}_b${b}_r$rep.log 2400 $t $PY $EP/bench.py --model $M8 --batch $b --temp 0 --tag ${t}_b${b}_r$rep
+    run $D/${t}_b${b}_r$rep.log 2400 $t $PY tests/vllm/bench.py --model $M8 --batch $b --temp 0 --tag ${t}_b${b}_r$rep
   done; done; done
   grep -H "^RESULT" $D/*.log | cut -c1-300 | tee -a $SUM; }
 

@@ -13,6 +13,8 @@ cfg = (BM, BN, BK, GROUP_M, num_warps, num_stages). Configs from experiments/per
 (CUDA-graph timing, HBM-cold rotating weights, H800); every config is `torch.equal` to torch._int_mm on
 random int8 and on all -128 / all 127 inputs (tests/test_gemm_sm90.py).
 """
+import functools
+
 import torch
 import triton
 import triton.language as tl
@@ -98,12 +100,13 @@ def pick(N, K, M):
     return None
 
 
-# Hopper or newer: wgmma + TMA. Resolved once at import, so a dispatch never pays for the capability query.
-SM90 = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9
-
+@functools.lru_cache(maxsize=None)
+def sm90():
+    """Hopper or newer: wgmma + TMA. Queried on first dispatch, not at import (importing must not initialise CUDA)."""
+    return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9
 
 
 def gemm_dispatch(a, w):
     """int8 GEMM with this module's own dispatch (benchmarks call this); serve goes through gemm_skinny.int_mm."""
-    cfg = pick(w.shape[0], w.shape[1], a.shape[0]) if SM90 else None
+    cfg = pick(w.shape[0], w.shape[1], a.shape[0]) if sm90() else None
     return gemm(a, w, cfg) if cfg is not None else torch._int_mm(a, w.t())

@@ -69,8 +69,8 @@ def main():
             for kx, t in times.items():
                 row.update({f"{kx}_ms": round(t, 4), f"{kx}_tops": round(fl / t),
                             f"{kx}_gbs": round(N * K / 1e6 / t / 1000)})
-            row.update({"old_equal": torch.equal(old.int_mm(x, w), ref),
-                        "new_equal": exact(f_new, x, w, ref)})
+            fn = (lambda xx, ww: gemm_sm90.gemm(xx, ww, cfg)) if cfg else (lambda xx, ww: torch._int_mm(xx, ww.t()))
+            row.update({"old_equal": torch.equal(old.int_mm(x, w), ref), "new_equal": exact(fn, x, w, ref)})
             out.append(row)
             print("ROW " + json.dumps(row), flush=True)
     if a.json:
