@@ -192,3 +192,21 @@ def test_tri_sample_noisy_exact(M):
             for r, (tn, td) in enumerate(temps):
                 ref = sampling.sample(li[r:r + 1], tn, td, sampling.gumbel(raw[r:r + 1], lnt, FR) if tn else None)
                 assert int(got[r]) == int(ref[0]), (M, scale, temps[r], r)
+
+
+@pytest.mark.parametrize("M", [1, 5, 128, 300])
+def test_tri_logp_matches_int_logp(M):
+    from bitexact.llama import V, ln_table
+    from bitexact.vllm_plugin import tri_logp
+    from bitexact.vllm_plugin.rl import int_logp
+    lnt = ln_table().cuda()
+    for Vn, scale in [(V, 1 << 18), (V, 1 << 23), (V, 1 << 29), (5000, 3), (1023, 1 << 25)]:
+        h = _head_case(M, Vn, M + Vn + scale, scale)
+        li = _head_ref(h)
+        g = torch.Generator(device="cuda").manual_seed(M)
+        tok = torch.randint(0, Vn, (M,), device="cuda", generator=g)
+        tok[: M // 3] = li[: M // 3].argmax(-1)                       # the max itself
+        tok[M // 3: M // 2] = li[M // 3: M // 2].argmin(-1)           # far below the max (clamped terms)
+        got = tri_logp.logp(h, tok, lnt)
+        want = int_logp(li, tok, lnt)
+        assert got.dtype == want.dtype and torch.equal(got.view(torch.int64), want.view(torch.int64)), (M, Vn, scale)
