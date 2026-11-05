@@ -35,8 +35,8 @@ BUCKETS = ["gemm_int8", "gemm_bf16", "elementwise", "attention", "kv_write", "sa
 _ATT = re.compile(r"_max_kernel|_acc_kernel|_xmax_kernel|_xacc_kernel|flash|fmha|attention|attn_fwd|paged_attention|unified_attention",
                   re.I)
 _KV = re.compile(r"reshape_and_cache|index_put|CatArrayBatchedCopy|concat_and_cache", re.I)
-_GEMM = re.compile(r"_wmm_kernel|gemm|gemv|xmma|cutlass|nvjet|cublas|matmul|splitk|_mm_|wgmma", re.I)
-_INT = re.compile(r"_wmm_kernel|s8|i8|int8|imma|igemm|_int_mm", re.I)
+_GEMM = re.compile(r"_lin_kernel|_wmm_kernel|gemm|gemv|xmma|cutlass|nvjet|cublas|matmul|splitk|_mm_|wgmma", re.I)
+_INT = re.compile(r"_lin_kernel|_wmm_kernel|s8|i8|int8|imma|igemm|_int_mm", re.I)
 _EW = re.compile(r"^triton_|elementwise|reduce|copy|fill|where|index|gather|scatter|arange|cat|unrolled|"
                  r"vectorized|softmax|argmax|rms|rotary|silu|act_and_mul|norm|compare|sort|topk|cumsum", re.I)
 

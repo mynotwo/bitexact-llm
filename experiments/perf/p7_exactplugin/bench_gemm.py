@@ -1,9 +1,12 @@
 """Microbench: exact-mode linear, old path (wmm_triton + segs.lin_y, compiled) vs FusedLin, CUDA-graph timing.
   python bench_gemm.py CONST [--layer 0]"""
 import argparse
-import statistics
+import sys
 
 import torch
+
+sys.path.insert(0, __file__.rsplit("/", 1)[0])
+from gtime import graph_time  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("const")
@@ -15,21 +18,6 @@ from bitexact.vllm_plugin.exact_gemm import FusedLin
 
 c = torch.load(a.const, map_location="cpu", weights_only=False)
 yc = torch.compile(lin_y, dynamic=None)
-
-
-def graph_time(fn, reps=50):
-    fn(); fn()
-    torch.cuda.synchronize()
-    g = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(g):
-        for _ in range(reps):
-            fn()
-    ts = []
-    for _ in range(5):
-        s, e = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-        s.record(); g.replay(); e.record(); torch.cuda.synchronize()
-        ts.append(s.elapsed_time(e) * 1e3 / reps)
-    return statistics.median(ts)
 
 
 for name in ("0.wqkv", "0.wo", "0.wgu", "0.wd", "lm"):
