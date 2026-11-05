@@ -103,11 +103,13 @@ e2e() { D=$O/e2e; mkdir -p $D
   done; done; done
   grep -H "^RESULT" $D/*.log | cut -c1-300 | tee -a $SUM; }
 
-prof() { for b in ${PB:-128 32 1}; do for tp in ${PT:-0}; do D=$O/prof_b${b}_t$tp
+prof() { for b in ${PB:-128 32 1}; do for tp in ${PT:-0}; do for t in $TREES; do D=$O/prof_b${b}_t$tp
     mkdir -p $D
-    run $D/int.log 2400 repo bash -c "cd experiments/perf/p8_exactfuse && $PY prof_vllm.py --model $EMODEL --batch $b --temp $tp --tag repo --out $D/int"
-    grep -h "^{" $D/int.log | cut -c1-1600 | tee -a $SUM
-  done; done; }
+    pv=experiments/perf/p8_exactfuse/prof_vllm.py
+    [ -f $S/$t/$pv ] || pv=experiments/perf/p7_exactplugin/prof_vllm.py
+    run $D/$t.log 2400 $t bash -c "cd $(dirname $pv) && $PY prof_vllm.py --model $EMODEL --batch $b --temp $tp --tag $t --out $D/$t"
+    grep -h "^{" $D/$t.log | cut -c1-1600 | tee -a $SUM
+  done; done; done; }
 
 # microbench: kernel time of the fused stages and of the fused linear, per row count
 micro() { D=$O/micro; mkdir -p $D
