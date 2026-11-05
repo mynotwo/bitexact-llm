@@ -30,6 +30,7 @@ from bitexact.int8.consts import FT
 from bitexact.int8.model import IntLlama
 from bitexact.llama import rope_tables
 from bitexact.vllm_plugin import paged, prefill, tri_logits, tri_paged, tri_sample
+from bitexact.vllm_plugin.graph import BUCKETS
 from bitexact.vllm_plugin.sampler import STASH
 
 MODEL = None             # the loaded model in this process (the sampler reads the ln table from it)
@@ -51,6 +52,23 @@ def _check_on_output():
         return out
     get_output.bitexact = True
     AsyncOutput.get_output = get_output
+
+
+def _gl_hook():
+    """Wraps vLLM's FULL-graph replay: the step's replay carries the LM-head pass (see _glogits); here the host
+    picks, from the running requests, whether that pass is the one this step needs (greedy rows, nothing else)
+    and hands its outputs to compute_logits."""
+    from vllm.v1.worker.gpu.cudagraph_utils import ModelCudaGraphManager
+    run = ModelCudaGraphManager.run_fullgraph
+    if getattr(run, "bitexact", False):
+        return
+
+    def run_fullgraph(self, desc):
+        if MODEL is not None:
+            MODEL._gl_replay(desc.num_tokens)
+        return run(self, desc)
+    run_fullgraph.bitexact = True
+    ModelCudaGraphManager.run_fullgraph = run_fullgraph
 
 
 def _extend_rope(c, model_dir, n):
@@ -105,9 +123,15 @@ class BitExactLlamaForCausalLM(nn.Module):
             # Inductor initialises its pattern tables on the first compile (host-to-device copies); do it now,
             # never inside a CUDA graph capture (speculative decoding reaches the first compile there).
             torch.compile(lambda t: t * 2 + 1)(torch.zeros(8, dtype=torch.long, device=dev))
+        # LM head inside the decode CUDA graphs (batches up to graph.BUCKETS[-1] rows; not with speculative decoding)
+        self.gl = os.environ.get("BITEXACT_GRAPH_LOGITS", "1") == "1" and self.spec_q == 1
+        self.gl_side, self.gl_warm, self.gl_val = {}, set(), 0
+        self.gate = torch.zeros(1, dtype=torch.int32, device=dev)
         STASH.active = True
         MODEL = self
         _check_on_output()
+        if self.gl:
+            _gl_hook()
 
     def embed_input_ids(self, input_ids):
         return self.m.emb[input_ids].long()
@@ -137,11 +161,48 @@ class BitExactLlamaForCausalLM(nn.Module):
             bt = bt[(torch.arange(N, device=bt.device) // q).clamp(max=R - 1)]
         elif R != N:
             bt = bt[torch.arange(N, device=bt.device).clamp(max=R - 1)]
-        return decode_forward(self.m, [a.kv_cache for a in self.attn], input_ids, positions,
-                              meta.slot_mapping[:N], bt)
+        x = decode_forward(self.m, [a.kv_cache for a in self.attn], input_ids, positions, meta.slot_mapping[:N], bt)
+        if self.gl and N <= BUCKETS[-1]:
+            self._glogits(x, N)
+        return x
+
+    def _glogits(self, x, N):
+        """The LM head after the decode forward, as part of its CUDA graph: final norm, LM-head GEMM and, behind a
+        device gate, the one-hot / greedy pass. The host then has no eager launches for a greedy step (the gate is
+        set per replay in _gl_replay); the GEMM output stays for the other modes (noisy, float) that run eagerly
+        on it in compute_logits. Same kernels and arguments as the eager path. A first call outside the capture
+        (vLLM's warm-up) compiles them."""
+        mm = self.m
+        cap = torch.cuda.is_current_stream_capturing()
+        if mm.nl != 2 or mm.post_check or not x.is_cuda or (not cap and N in self.gl_warm):
+            return
+        pre = mm.sg.pre_norm(x.long(), mm.gf)
+        w, mw, fmsh = mm.lm
+        head = tri_sample.Head(mm._gemm(pre[0], w), mw, fmsh, pre[1], pre[2])
+        out, y = tri_sample.head(head, "onehot", gate=self.gate)
+        if cap:
+            self.gl_side[N] = (head, out, y)
+        else:
+            self.gl_warm.add(N)
+
+    def _gl_replay(self, N):
+        """Called right before vLLM replays the graph of N tokens: decide the step's logits mode from the running
+        requests (the same test compute_logits applies on the eager path) and set the gate."""
+        STASH.gl = self.gl_side.get(N)
+        if STASH.gl is None:
+            return
+        sp = STASH.sampler
+        strict = sp is None or sp.any_strict()
+        noisy = (not strict) and sp.any_noisy()
+        STASH.gmode = (strict, noisy)
+        v = int(not strict and not noisy)
+        if v != self.gl_val:
+            self.gate.fill_(v)
+            self.gl_val = v
 
     def forward(self, input_ids, positions, intermediate_tensors=None, inputs_embeds=None, **kw):
         meta = self._meta()
+        STASH.gl = None
         if meta is not None and torch.cuda.is_current_stream_capturing():
             return self._captured_decode(input_ids, positions, meta)
         x = self.embed_input_ids(input_ids) if inputs_embeds is None else inputs_embeds.long()
@@ -181,19 +242,35 @@ class BitExactLlamaForCausalLM(nn.Module):
     def compute_logits(self, hidden_states):
         mm = self.m
         if hidden_states.is_cuda and mm.nl == 2 and not mm.post_check:
-            # LM-head GEMM, then one Triton pass over its output (tri_sample): no int64 logits are stored.
-            pre = mm.sg.pre_norm(hidden_states.long(), mm.gf)
-            w, mw, fmsh = mm.lm
-            head = tri_sample.Head(mm._gemm(pre[0], w), mw, fmsh, pre[1], pre[2])
+            # LM-head GEMM, then one Triton pass over its output (tri_sample): no int64 logits are stored. A decode
+            # step replayed from a CUDA graph arrives with the GEMM (and the greedy pass) already done (_glogits).
+            g, STASH.gl = STASH.gl, None
+            R = hidden_states.shape[0]
+            if g is not None and R <= g[0].M:
+                h = g[0]
+                head = tri_sample.Head(h.c, h.m, h.fmsh, h.mant, h.e, R)
+                strict, noisy = STASH.gmode
+                if os.environ.get("BITEXACT_GL_CHECK") == "1":
+                    self._gl_check(hidden_states, head, g[2][:R])
+            else:
+                g = None
+                pre = mm.sg.pre_norm(hidden_states.long(), mm.gf)
+                w, mw, fmsh = mm.lm
+                head = tri_sample.Head(mm._gemm(pre[0], w), mw, fmsh, pre[1], pre[2])
+                strict = STASH.sampler is None or STASH.sampler.any_strict()
+                noisy = (not strict) and STASH.sampler.any_noisy()
             self._check_late()
             STASH.head, STASH.logits = head, None
-            STASH.strict = STASH.sampler is None or STASH.sampler.any_strict()
-            if not STASH.strict and STASH.sampler.any_noisy():
+            STASH.strict = strict
+            if not strict and noisy:
                 # temperature rows: the sampler's noisy pass chooses every token and rewrites all of vLLM's
                 # logits, so no pass here (and no argmax) and the buffer need not be initialised.
                 STASH.greedy = None
-                return torch.empty(head.M, head.V, dtype=torch.float32, device=head.c.device)
-            f, STASH.greedy = tri_sample.head(head, "float" if STASH.strict else "onehot")
+                return torch.empty(head.R, head.V, dtype=torch.float32, device=head.c.device)
+            if g is not None and not strict:
+                STASH.greedy = g[2][:R]
+                return g[1][:R]
+            f, STASH.greedy = tri_sample.head(head, "float" if strict else "onehot")
             return f
         li = mm.logits(hidden_states.long())
         self._check_late()
@@ -203,6 +280,20 @@ class BitExactLlamaForCausalLM(nn.Module):
             return li.float() * (2.0 ** -16)
         f, STASH.greedy = tri_logits.argmax_float(li)          # same float bits, plus the greedy token
         return f
+
+    def _gl_check(self, hidden_states, head, y):
+        """Test mode (BITEXACT_GL_CHECK=1): the graph's GEMM output and greedy tokens equal a recomputation from
+        the hidden states vLLM handed over (same rows, same integers)."""
+        from bitexact.intops import join_limbs
+        mm = self.m
+        pre = mm.sg.pre_norm(hidden_states.long(), mm.gf)
+        c = mm._gemm(pre[0], mm.lm[0])
+        R = head.R
+        assert torch.equal(pre[1], head.mant[:R]) and torch.equal(pre[2], head.e[:R]), "graph logits: norm differs"
+        assert torch.equal(join_limbs(c, R, 2), join_limbs(head.c, head.M, 2)[:R]), "graph logits: GEMM differs"
+        if mm.gate.item():
+            _, y2 = tri_sample.head(tri_sample.Head(c, *mm.lm[1:], pre[1], pre[2]), "none")
+            assert torch.equal(y, y2), "graph logits: greedy tokens differ"
 
     def load_weights(self, weights):
         for _ in weights:            # the integer constants were loaded in __init__

@@ -43,6 +43,8 @@ class _Stash:
     active = False           # set when the integer model is loaded in this process
     head = None              # tri_sample.Head of the latest compute_logits (the int64 logits are not stored)
     strict = False           # this step: some request needs the real float logits (see _strict)
+    gl = None                # (Head, onehot logits, greedy) a decode CUDA graph computed for this step, or None
+    gmode = (False, False)   # (strict, noisy) the replay hook chose for it
     sampler = None           # the IntSampler of the process
 
 
@@ -155,7 +157,7 @@ class IntSampler(LogitsProcessor):
             return logits
         head = STASH.head
         li = STASH.logits if head is None else None
-        n = head.M if head is not None else li.shape[0]
+        n = head.R if head is not None else li.shape[0]
         assert (head is not None or li is not None) and n == logits.shape[0], "integer logits rows != vLLM rows"
         if self.lnt is None:
             from bitexact.vllm_plugin.model import MODEL
