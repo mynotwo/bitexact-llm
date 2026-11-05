@@ -286,10 +286,17 @@ class BitExactLlamaForCausalLM(nn.Module):
             self._check_late()
             STASH.head, STASH.logits = None, li
             STASH.strict = STASH.sampler is None or STASH.sampler.any_strict()
-            # strict requests need vLLM's real float logits; otherwise the sampler rewrites every row, so only
-            # the greedy token is computed (no float copy of the [rows, V] logits)
-            f, STASH.greedy = tri_logits.argmax_float(li, scale=2.0 ** -mm.FR, write=STASH.strict)
-            return f if STASH.strict else torch.empty(li.shape, dtype=torch.float32, device=li.device)
+            if not STASH.strict and STASH.sampler.any_noisy():
+                # temperature rows: the sampler's noisy pass chooses every token (greedy rows included) and
+                # rewrites all of vLLM's logits, so nothing is written here and the buffer is uninitialised.
+                _, STASH.greedy = tri_logits.argmax_float(li, mode="none")
+                return torch.empty(li.shape, dtype=torch.float32, device=li.device)
+            # strict requests need vLLM's real float logits. Otherwise only the greedy token is computed (no float
+            # copy of the [rows, V] logits) and each row is a one-hot at it: an all-greedy batch reports no
+            # processing, so the sampler's apply() never runs and vLLM's own argmax must return the token.
+            f, STASH.greedy = tri_logits.argmax_float(li, scale=2.0 ** -mm.FR,
+                                                       mode="float" if STASH.strict else "onehot")
+            return f
         if hidden_states.is_cuda and mm.nl == 2 and not mm.post_check:
             # LM-head GEMM, then one Triton pass over its output (tri_sample): no int64 logits are stored. A decode
             # step replayed from a CUDA graph arrives with the GEMM (and the greedy pass) already done (_glogits).

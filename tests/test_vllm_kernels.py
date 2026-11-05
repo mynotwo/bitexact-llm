@@ -85,6 +85,11 @@ def test_logits_argmax_float_exact():
             f, y = tri_logits.argmax_float(li, nch=nch)
             assert torch.equal(y, ref), (M, V, nch)
             assert torch.equal(f.view(torch.int32), (li.float() * (2.0 ** -16)).view(torch.int32)), (M, V, nch)
+            g_, y = tri_logits.argmax_float(li, mode="onehot", nch=nch)       # vLLM's argmax picks the token
+            assert torch.equal(y, ref), (M, V, nch)
+            assert torch.equal(g_.argmax(1), ref), (M, V, nch)
+            assert torch.equal(g_[torch.arange(M, device="cuda"), ref], torch.zeros(M, device="cuda")), (M, V, nch)
+            assert torch.equal(torch.isfinite(g_).sum(1), torch.ones(M, dtype=torch.long, device="cuda")), (M, V, nch)
         assert torch.equal(tri_logits.first_argmax(li), ref)
 
 
