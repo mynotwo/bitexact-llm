@@ -7,11 +7,16 @@ integers equal the standalone ExactLlama's; every rule is row-local, so batch, p
 change a bit. The forward uses device tensors only (CUDA-graph safe).
 """
 
+import os
+
 import torch
 
 from bitexact.exact import ops
 from bitexact.exact.model import ExactLlama
 from bitexact.vllm_plugin import paged, tri_exact_attn, tri_paged
+from bitexact.vllm_plugin.exact_gemm import FusedLin
+
+FUSE_MAX_M = int(os.environ.get("BITEXACT_EXACT_FUSE_M", "256"))   # rows up to which the one-kernel linear is used
 
 
 class ExactEngine:
@@ -22,6 +27,20 @@ class ExactEngine:
         self.L, self.H, self.HKV, self.HD, self.D = m.L, m.H, m.HKV, m.HD, m.D
         self.FR, self.ln, self.emb, self.sha = m.FR, m.ln, m.emb, m.sha
         self.l2e = ops.L2E28_HD[m.HD]
+        self.fl = torch.zeros(1, dtype=torch.int32, device=m.dev)             # flags set by the fused linears
+        self.fused = {}
+        if m.dev.type == "cuda" and FUSE_MAX_M:
+            mk = lambda lin: FusedLin(lin)
+            self.fused = {"lm": mk(m.lm)}
+            for i, ly in enumerate(m.layers):
+                for n in ("wqkv", "wo", "wgu", "wd"):
+                    self.fused[i, n] = mk(ly[n])
+
+    def _lin(self, key, lin, q, sh, checked):
+        """(y, flag-or-None) when the fused kernel applies (few rows), else (None, (C, rs, d, g))."""
+        if self.fused and q.shape[0] <= FUSE_MAX_M:
+            return self.fused[key](q, sh, self.fl, checked), None
+        return None, lin(q)
 
     @property
     def err(self):
@@ -45,7 +64,11 @@ class ExactEngine:
         err = torch.zeros((), dtype=torch.bool, device=x.device)
         for i in range(self.L):
             ly = m.layers[i]
-            qg, shg, k, v, err = m.sg.qkv(*ly["wqkv"](q), sh, pos.view(N, 1), m.cos, m.sin, N, 1, err)
+            y, cr = self._lin((i, "wqkv"), ly["wqkv"], q, sh, False)
+            if y is not None:
+                qg, shg, k, v, err = m.sg.qkv_y(y, pos.view(N, 1), m.cos, m.sin, N, 1, err)
+            else:
+                qg, shg, k, v, err = m.sg.qkv(*cr, sh, pos.view(N, 1), m.cos, m.sin, N, 1, err)
             if kvs is None:
                 num = torch.zeros(N * self.HKV, G, self.HD, dtype=torch.long, device=x.device)
                 den = torch.ones(N * self.HKV, G, 1, dtype=torch.long, device=x.device)
@@ -56,17 +79,33 @@ class ExactEngine:
                                                  qpos, c, bt, rmap, m.exp2, self.l2e)
                 num, den = num.view(N * self.HKV, G, self.HD), den.view(N * self.HKV, G, 1)
             qo, sho = m.sg.attn_out(num, den, 1)
-            x, q, sh, err = m.sg.add_norm(*ly["wo"](qo), sho, x, *ly["gm"], err)
-            q, sh, err = m.sg.gu_silu(*ly["wgu"](q), sh, m.exp2, err)
+            y, cr = self._lin((i, "wo"), ly["wo"], qo, sho, True)
+            if y is not None:
+                x, q, sh, err = m.sg.add_norm_y(y, x, *ly["gm"], err)
+            else:
+                x, q, sh, err = m.sg.add_norm(*cr, sho, x, *ly["gm"], err)
+            y, cr = self._lin((i, "wgu"), ly["wgu"], q, sh, False)
+            if y is not None:
+                q, sh, err = m.sg.gu_silu_y(y, m.exp2, err)
+            else:
+                q, sh, err = m.sg.gu_silu(*cr, sh, m.exp2, err)
             nxt = m.layers[i + 1]["ga"] if i + 1 < self.L else m.gf
-            x, q, sh, err = m.sg.add_norm(*ly["wd"](q), sh, x, *nxt, err)
-        m.err |= err
+            y, cr = self._lin((i, "wd"), ly["wd"], q, sh, True)
+            if y is not None:
+                x, q, sh, err = m.sg.add_norm_y(y, x, *nxt, err)
+            else:
+                x, q, sh, err = m.sg.add_norm(*cr, sh, x, *nxt, err)
+        m.err |= err | (self.fl != 0).any()
         return x
 
     def logits(self, h):
         """Final residual rows [M, D] -> int64 logits [M, V] at FR."""
         m = self.x
         q, sh = m.sg.pre_norm(h, *m.gf)
-        y, flag = m.sg.lin_out(*m.lm(q), sh)
-        m.err |= flag
+        y, cr = self._lin("lm", m.lm, q, sh, True)
+        if y is None:
+            y, flag = m.sg.lin_out(*cr, sh)
+            m.err |= flag
+        else:
+            m.err |= (self.fl != 0).any()
         return y

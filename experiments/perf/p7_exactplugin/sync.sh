@@ -4,6 +4,6 @@ set -e
 HOST=audreymao@10.154.162.141
 S=/data41/audreymao/perf7_20261105/exactplugin
 LOCAL=$(cd "$(dirname "$0")/../../.." && pwd)
-ssh $HOST "mkdir -p $S/repo"
-rsync -a --delete --exclude .git --exclude runs "$LOCAL/" $HOST:$S/repo/
+ssh $HOST "mkdir -p $S/${TREE:-repo}"
+rsync -a --delete --exclude .git --exclude runs "$LOCAL/" $HOST:$S/${TREE:-repo}/
 echo synced

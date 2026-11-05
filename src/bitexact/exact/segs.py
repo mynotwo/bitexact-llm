@@ -37,6 +37,10 @@ def lin_add(C, rs, d, g, sh, x):
     return x + y.view(x.shape), flag
 
 
+def add_y(y, x):
+    return x + y.view(x.shape)
+
+
 def rms(x, err):
     r, er = ops.rms(x)
     return r, er, err | (x.abs().amax() >= 1 << 40)
@@ -61,8 +65,13 @@ def _rope_full(x, c, s):
 def lin_rope(C, rs, d, g, sh, pos, cos, sin, B, T, dm):
     """qkv linear + RoPE -> q at FR + FT [B, T, H, HD], k at FK, v at FV [B, T, HKV, HD], y (for the check).
     dm = (H, HKV, HD)."""
+    return rope_y(lin_y(C, rs, d, g, sh), pos, cos, sin, B, T, dm)
+
+
+def rope_y(y, pos, cos, sin, B, T, dm):
+    """lin_rope from the qkv linear's output y [B * T, (H + 2 HKV) HD] at FR."""
     h, hkv, hd = dm
-    y = lin_y(C, rs, d, g, sh).view(B, T, -1)
+    y = y.view(B, T, -1)
     c, s = cos[pos][:, :, None], sin[pos][:, :, None]
     Pq = _rope_full(y[..., :h * hd].reshape(B, T, h, hd), c, s)
     k = ops.rshc(_rope_full(y[..., h * hd:(h + hkv) * hd].reshape(B, T, hkv, hd), c, s), FR + FT - FK)
@@ -98,7 +107,10 @@ def attn_div(num, den, T, hkv):
 
 
 def lin_silu(C, rs, d, g, sh, lut):
-    gu = lin_y(C, rs, d, g, sh)
+    return silu_y(lin_y(C, rs, d, g, sh), lut)
+
+
+def silu_y(gu, lut):
     ff = gu.shape[1] // 2
     P, _, ok = ops.silu_mul(gu[:, :ff], gu[:, ff:], lut)
     return P, ok
@@ -110,7 +122,7 @@ def quant_silu(P, ok, err):
 
 
 STAGES = ("lin_y", "lin_add", "rms", "ndiv", "quant", "lin_rope", "q_group", "softmax", "attn_div",
-          "lin_silu", "quant_silu")
+          "lin_silu", "quant_silu", "rope_y", "add_y", "silu_y")
 
 
 class Segs:
@@ -143,6 +155,21 @@ class Segs:
         Pq, k, v, y = self.s.lin_rope(C, rs, d, g, sh, pos, cos, sin, B, T, self.dm)
         qg, shg, err = self.s.q_group(Pq, k, v, y, err)
         return qg, shg, k, v, err
+
+    # variants taking the linear's output y (exact_gemm.FusedLin) instead of (C, rs, d, g)
+    def qkv_y(self, y, pos, cos, sin, B, T, err):
+        Pq, k, v, y = self.s.rope_y(y, pos, cos, sin, B, T, self.dm)
+        qg, shg, err = self.s.q_group(Pq, k, v, y, err)
+        return qg, shg, k, v, err
+
+    def add_norm_y(self, y, x, gm, ge, err):
+        x = self.s.add_y(y, x)
+        q, s, err = self.norm_q(x.view(-1, x.shape[-1]), gm, ge, err)
+        return x, q, s, err
+
+    def gu_silu_y(self, y, lut, err):
+        P, ok = self.s.silu_y(y, lut)
+        return self.s.quant_silu(P, ok, err)
 
     def softmax(self, raw, qpos, shg, lut):
         return self.s.softmax(raw, qpos, shg, lut, self.l2e)
