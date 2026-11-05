@@ -121,11 +121,13 @@ tokens() { D=$O/tokens; mkdir -p $D
 tokcmp() { D=$O/tokens; R=${CMPA:-base}; N=${CMPB:-repo}
   for k in mixed t0 lp; do cmp -s $D/${R}_$k.json $D/${N}_$k.json && echo "tokens $k IDENTICAL" || echo "tokens $k DIFF"; done | tee -a $SUM; }
 
-spec() { D=$O/spec; mkdir -p $D
-  for tr in $TREES; do
-    run $D/${tr}_spec.log 3600 $tr $PY tests/vllm/spec_check.py
-  done
-  grep -H "SPEC\|k=0\|k=4" $D/*.log | tail -n 20 | tee -a $SUM; }
+spec() { D=$O/spec; mkdir -p $D; SC="$PY tests/vllm/spec_check.py --model $MODEL --eager 0"
+  for k in 0 4; do run $D/suite_k$k.log 2400 repo $SC --work suite --k $k --out $D/suite_k$k; done
+  for wk in rep bench; do for B in 1 32; do for T in 0 0.7; do for k in 0 4; do
+    run $D/${wk}_B${B}_T${T}_k$k.log 2400 repo $SC --work $wk --batch $B --temp $T --k $k --out $D/${wk}_B${B}_T${T}_k$k
+  done; done; done; done
+  for f in $D/*_k0.json; do g=${f%_k0.json}_k4.json
+    cmp -s $f $g && echo "spec $(basename ${f%_k0.json}) IDENTICAL" || echo "spec $(basename ${f%_k0.json}) DIFF"; done | tee -a $SUM; }
 
 s8() { D=$O/s8; mkdir -p $D; export GPU_UTIL=0.6; RS="$PY tests/vllm/run_serve.py --model $M8"
   run $D/ref.log 3000 repo $PY tests/vllm/run_ref.py --const $C8 --out $D/ref
