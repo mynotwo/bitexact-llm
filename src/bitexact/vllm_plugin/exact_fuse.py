@@ -237,6 +237,9 @@ def _silu_kernel(y_ptr, lut_ptr, q_ptr, sh_ptr, err_ptr, FF, CH: tl.constexpr):
         tl.store(q_ptr + row * FF + c0 + lane, _rshc(P, sh + 2 * FRC).to(tl.int32), mask=ok)
 
 
+NW_NORM, NW_ATTN, NW_SILU = 8, 8, 8
+
+
 # ---- host wrappers (all device-only, CUDA-graph safe) ----
 
 def _norm(m, x, y, ids, gamma, fl, mode, norm, store):
@@ -248,7 +251,7 @@ def _norm(m, x, y, ids, gamma, fl, mode, norm, store):
     gm, ge = gamma if gamma is not None else (xo, xo)
     if M:
         _norm_kernel[(M,)](m.emb if mode == 0 else x, y, ids, gm, ge, xo, q, sh, fl, K2=D, LG=D.bit_length() - 1,
-                           MODE=mode, NORM=norm, STORE=store, num_warps=8)
+                           MODE=mode, NORM=norm, STORE=store, num_warps=NW_NORM)
     return xo, q, sh
 
 
@@ -293,7 +296,7 @@ def attn_out(m, num, den):
     q = torch.empty(N, K2, dtype=torch.int32, device=m.dev)
     sh = torch.empty(N, dtype=torch.long, device=m.dev)
     if N:
-        _attn_out_kernel[(N,)](num, den, q, sh, K2=K2, HDC=m.HD, num_warps=8)
+        _attn_out_kernel[(N,)](num, den, q, sh, K2=K2, HDC=m.HD, num_warps=NW_ATTN)
     return q, sh
 
 
@@ -303,5 +306,5 @@ def silu_quant(m, y, lut, fl):
     q = torch.empty(N, FF, dtype=torch.int32, device=m.dev)
     sh = torch.empty(N, dtype=torch.long, device=m.dev)
     if N:
-        _silu_kernel[(N,)](y, lut, q, sh, fl, FF, CH=min(2048, triton.next_power_of_2(FF)), num_warps=8)
+        _silu_kernel[(N,)](y, lut, q, sh, fl, FF, CH=min(2048, triton.next_power_of_2(FF)), num_warps=NW_SILU)
     return q, sh
