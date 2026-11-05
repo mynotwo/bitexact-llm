@@ -13,9 +13,10 @@ import torch
 
 from bitexact.exact import ops
 from bitexact.exact.model import ExactLlama
-from bitexact.vllm_plugin import paged, tri_exact_attn, tri_paged
+from bitexact.vllm_plugin import exact_fuse, paged, tri_exact_attn, tri_paged
 from bitexact.vllm_plugin.exact_gemm import FusedLin
 
+EW_FUSE = os.environ.get("BITEXACT_EXACT_EW", "1") == "1"      # fused element-wise kernels (exact_fuse.py) on CUDA
 FUSE_MAX_M = int(os.environ.get("BITEXACT_EXACT_FUSE_M", str(1 << 30)))   # rows up to which the one-kernel linear is used (0: never)
 
 
@@ -61,6 +62,8 @@ class ExactEngine:
         pos = pos.long()
         slot = torch.where(slot < 0, torch.zeros_like(slot), slot).long()
         qpos = pos.view(-1, 1).expand(-1, G)
+        if self.fused and EW_FUSE and FUSE_MAX_M >= N:
+            return self._forward_fused(kvs, ids, pos, slot, bt, rmap, qpos)
         x = m.emb[ids].long()
         q, sh = m.sg.pre_norm(x, *m.layers[0]["ga"])
         err = torch.zeros((), dtype=torch.bool, device=x.device)
@@ -100,10 +103,37 @@ class ExactEngine:
         m.err |= err | (self.fl != 0).any()
         return x
 
+    def _forward_fused(self, kvs, ids, pos, slot, bt, rmap, qpos):
+        """forward with one kernel per element-wise stage (exact_fuse.py); the last layer only adds (logits()
+        normalizes the rows it needs)."""
+        m, fl, fz = self.x, self.fl, exact_fuse
+        N, G = ids.shape[0], self.H // self.HKV
+        x, q, sh = fz.embed_norm(m, ids, m.layers[0]["ga"], fl)
+        for i in range(self.L):
+            ly = m.layers[i]
+            qq, shq = fz.qkv(m, self.fused[i, "wqkv"](q, sh, fl, False), pos, slot,
+                             None if kvs is None else paged.kv_view(kvs[i]), fl)
+            if kvs is None:
+                num = torch.zeros(N, self.HKV, G, self.HD, dtype=torch.long, device=x.device)
+                den = torch.ones(N, self.HKV, G, 1, dtype=torch.long, device=x.device)
+            else:
+                num, den = tri_exact_attn.attend(qq.view(N, self.HKV, G, self.HD), shq.view(N, self.HKV, G), qpos,
+                                                 paged.kv_view(kvs[i]), bt, rmap, m.exp2, self.l2e)
+            qo, sho = fz.attn_out(m, num, den)
+            x, q, sh = fz.add_norm(m, self.fused[i, "wo"](qo, sho, fl, True), x, ly["gm"], fl)
+            q, sh = fz.silu_quant(m, self.fused[i, "wgu"](q, sh, fl, False), m.exp2, fl)
+            nxt = m.layers[i + 1]["ga"] if i + 1 < self.L else None
+            x, q, sh = fz.add_norm(m, self.fused[i, "wd"](q, sh, fl, True), x, nxt, fl)
+        m.err |= (fl != 0).any()
+        return x
+
     def logits(self, h):
         """Final residual rows [M, D] -> int64 logits [M, V] at FR."""
         m = self.x
-        q, sh = m.sg.pre_norm(h, *m.gf)
+        if self.fused and EW_FUSE:
+            q, sh = exact_fuse.pre_norm(m, h, m.gf, self.fl)
+        else:
+            q, sh = m.sg.pre_norm(h, *m.gf)
         y, cr = self._lin("lm", m.lm, q, sh, True)
         if y is None:
             y, flag = m.sg.lin_out(*cr, sh)
