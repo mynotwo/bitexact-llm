@@ -1,6 +1,7 @@
-"""One Triton kernel per exact-mode linear: all 9 limb products, the sparse residual and the rounding epilogue.
+"""Exact-mode linears: fused limb products, or a stacked integer GEMM and exact epilogue.
 
-Replaces wmm_triton (split-K int64 partials [split, M, N] in memory) + segs.lin_y (sum, ELL residual gather,
+The fused path replaces wmm_triton (split-K int64 partials [split, M, N] in memory)
++ segs.lin_y (sum, ELL residual gather,
 combine, shift_round_hl) for decode-size M. A program owns a [BM, BN] output tile and walks all of K:
   T  = sum_k q[m, k] W[n, k]        q split into 3 int8 limbs in registers, W = 3 stored limbs, 9 int8 dots
                                     into 5 int32 accumulators (|acc| <= 3 K 2^14 < 2^31), int64 at the end
@@ -8,6 +9,10 @@ combine, shift_round_hl) for decode-size M. A program owns a [BM, BN] output til
   y  = shift_round_hl(combine(T, d, B), sh[m] + g[n] - d[n] + FR)   (exact/ops.py, same int64 operations)
 and the lost-bit / range flag of wmm.epilogue(checked=True) is set from the kernel. The result is the same
 integers as lin_y(*Lin(q), sh) because integer sums are exact in any order.
+
+Measured Hopper shapes can stack the three activation and weight limbs into one int32 GEMM.
+Each partial sum fits int32 (K <= 14336, |limb| <= 128); the epilogue promotes it to int64
+before shifting, adds the original sparse residual, then rounds once with the same overflow check.
 """
 
 import torch
@@ -114,8 +119,114 @@ def _lin_kernel(q_ptr, w_ptr, d_ptr, g_ptr, sh_ptr, cnt_ptr, ec_ptr, ev_ptr, y_p
     tl.store(y_ptr + rm[:, None].to(tl.int64) * N + rn[None, :], y, mask=ok)
 
 
+@triton.jit
+def _stack(q_ptr, a_ptr, M, K, P, sqm, B: tl.constexpr):
+    ix = tl.program_id(0) * B + tl.arange(0, B)
+    row, col = ix // K, ix % K
+    value = tl.load(q_ptr + (row % M) * sqm + col, mask=(row < 3 * M) & (ix < P * K), other=0)
+    a0, value = _split(value)
+    a1, value = _split(value)
+    a2, value = _split(value)
+    part = tl.where(row // M == 0, a0, tl.where(row // M == 1, a1, a2))
+    tl.store(a_ptr + ix, tl.where(row < 3 * M, part, 0), mask=ix < P * K)
+
+
+@triton.jit
+def _epilogue(
+    c_ptr,
+    q_ptr,
+    d_ptr,
+    g_ptr,
+    sh_ptr,
+    cnt_ptr,
+    ec_ptr,
+    ev_ptr,
+    y_ptr,
+    flag_ptr,
+    M,
+    N,
+    R,
+    sqm,
+    BM: tl.constexpr,
+    BN: tl.constexpr,
+    HASRES: tl.constexpr,
+    CHECK: tl.constexpr,
+):
+    rm = tl.program_id(0) * BM + tl.arange(0, BM)
+    rn = tl.program_id(1) * BN + tl.arange(0, BN)
+    mm, nm = rm < M, rn < N
+    T = tl.zeros((BM, BN), dtype=tl.int64)
+    for i in tl.static_range(3):
+        for j in tl.static_range(3):
+            part = tl.load(
+                c_ptr + (i * M + rm[:, None]) * (3 * N) + j * N + rn[None, :], mask=mm[:, None] & nm[None, :], other=0
+            )
+            T += part.to(tl.int64) << (8 * (i + j))
+    B = tl.zeros((BM, BN), dtype=tl.int64)
+    if HASRES:
+        cnt = tl.load(cnt_ptr + rn, mask=nm, other=0)
+        for j in range(0, tl.max(cnt, axis=0)):
+            ec = tl.load(ec_ptr + rn * R + j, mask=nm & (j < cnt), other=0)
+            ev = tl.load(ev_ptr + rn * R + j, mask=nm & (j < cnt), other=0)
+            qv = tl.load(q_ptr + rm[:, None] * sqm + ec[None, :], mask=mm[:, None] & nm[None, :], other=0)
+            B += qv.to(tl.int64) * ev[None, :]
+    d = tl.load(d_ptr + rn, mask=nm, other=0).to(tl.int64)[None, :]
+    g = tl.load(g_ptr + rn, mask=nm, other=0).to(tl.int64)[None, :]
+    sh = tl.load(sh_ptr + rm, mask=mm, other=0)[:, None]
+    p = sh + (g - d) + FRC
+    y, H, L = _round_shift(T, B, d, p)
+    ok = mm[:, None] & nm[None, :]
+    if CHECK:
+        one = _one(p)
+        up_limit = one << (31 - tl.minimum(tl.maximum(p, 0), 30))
+        small_limit = one << (31 + tl.minimum(tl.maximum(-p, 1), 31))
+        up_lost = (H >= up_limit) | (H < -up_limit) | ((p > 30) & ((H != 0) | (L != 0)))
+        small_lost = (H >= small_limit) | (H < -small_limit)
+        lost = tl.where(p >= 0, up_lost, (p > -32) & small_lost)
+        bad = (lost | (y <= -(1 << 62)) | (y >= (1 << 62))) & ok
+        tl.store(flag_ptr, 1, mask=tl.max(tl.max(bad.to(tl.int32), axis=1), axis=0) > 0)
+    tl.store(y_ptr + rm[:, None].to(tl.int64) * N + rn[None, :], y, mask=ok)
+
+
+def _stacked_linear(lin, q, sh, flag, checked, cfg):
+    M, K = q.shape
+    P = triton.cdiv(3 * M, 32) * 32
+    a = torch.empty((P, K), device=q.device, dtype=torch.int8)
+    _stack[(triton.cdiv(P * K, 1024),)](q, a, M, K, P, q.stride(0), B=1024)
+    w = lin.limbs.reshape(3 * lin.N, K)
+    if cfg is None:
+        c = torch._int_mm(a, w.t())
+    else:
+        from bitexact.int8.gemm_sm90 import gemm
+
+        c = gemm(a, w, cfg)
+    y = torch.empty((M, lin.N), device=q.device, dtype=torch.int64)
+    _epilogue[(triton.cdiv(M, 16), triton.cdiv(lin.N, 64))](
+        c,
+        q,
+        lin.d,
+        lin.g,
+        sh,
+        lin.cnt,
+        lin.ec,
+        lin.ev,
+        y,
+        flag,
+        M,
+        lin.N,
+        lin.R,
+        q.stride(0),
+        BM=16,
+        BN=64,
+        HASRES=lin.has_res,
+        CHECK=checked,
+        num_warps=4,
+    )
+    return y
+
+
 class FusedLin:
-    """The linear layer `lin` (exact.model.Lin on CUDA, gemm = triton) as one kernel per call: q int32
+    """The linear layer `lin` (exact.model.Lin on CUDA, gemm = triton) with fused or stacked kernels: q int32
     [M, K], sh int64 [M] -> y int64 [M, N] at FR; sets flag (int32 [1]) to 1 when wmm.epilogue's checked
     condition (lost bits, |y| >= 2^62) holds anywhere."""
 
@@ -172,6 +283,18 @@ class FusedLin:
 
     def __call__(self, q, sh, flag, checked=True):
         M, K = q.shape
+        if self.cfg is None and 0 < M <= 128 and q.device.type == "cuda":
+            from bitexact.int8.gemm_sm90 import sm90
+            if sm90():
+                shape = self.N, K
+                wgmma_cfg = (128, 128, 128, 4, 8, 5)
+                if shape == (4096, 14336):
+                    return _stacked_linear(self, q, sh, flag, checked, None if M <= 64 else wgmma_cfg)
+                # Holdout keeps qkv M <= 16 and gate/up or LM M = 64 on the faster fused path.
+                if shape == (6144, 4096) and M >= 17:
+                    return _stacked_linear(self, q, sh, flag, checked, None if M <= 64 else wgmma_cfg)
+                if shape in ((28672, 4096), (128256, 4096)) and M >= 17 and M != 64:
+                    return _stacked_linear(self, q, sh, flag, checked, wgmma_cfg)
         cfg = self.cfg or next(c for mx, c in self.TABLE.get((self.N, K), self.DEFAULT) if M <= mx)
         BM, BN, BK, nw, ns = cfg
         y = torch.empty((M, self.N), dtype=torch.long, device=q.device)

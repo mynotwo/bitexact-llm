@@ -8,8 +8,11 @@ exact/segs.py runs as ~10 Inductor kernels between two linears.
   _attn_out_kernel  o = div_round(num, FR - FV, den), ops.quant(o, -FR) (segs.attn_div + quant)
   _silu_kernel      silu(g) * u (table + interpolation), ops.quant(., -2 FR): two passes over a row, P is
                     recomputed in the second                           (segs.silu_y + quant_silu)
+  _silu_cached_kernel stores exact P from the first pass and reloads it for measured 8B batches.
 
-Every element goes through the same int64 operations as exact/ops.py (shifts follow torch's rules, floor
+Measured 8B norms and attention outputs use an exact integer reciprocal plus remainder correction.
+
+Every element follows exact/ops.py's fixed-integer rules (shifts follow torch's rules, floor
 divisions of possibly negative numerators are corrected, bitlen is 64 - clz), so the integers are the segs
 stages'. Rows are independent; maxima and sums are exact integer reductions. Bound flags are written to
 `fl` (int32 [1], set to 1, never cleared) under the same conditions as the err terms of the segs stages.
@@ -80,9 +83,60 @@ def _quant_sh(amax, eps: tl.constexpr):
 
 
 @triton.jit
+def _umulhi(x, inverse):
+    return tl.inline_asm_elementwise(
+        "mul.hi.u64 $0, $1, $2;",
+        constraints="=l,l,l",
+        args=[x, inverse + tl.full(x.shape, 0, tl.uint64)],
+        dtype=tl.uint64,
+        is_pure=True,
+        pack=1,
+    )
+
+
+@triton.jit
+def _unsigned_qr(x, denominator, inverse):
+    q = _umulhi(x, inverse)
+    remainder = x - q * denominator
+    fix = remainder >= denominator
+    q += fix.to(tl.uint64)
+    remainder -= tl.where(fix, denominator, 0)
+    return q, remainder
+
+
+@triton.jit
+def _signed_qr(a, denominator, inverse):
+    negative = a < 0
+    magnitude = tl.where(negative, -a, a).to(tl.uint64)
+    q, remainder = _unsigned_qr(magnitude, denominator, inverse)
+    signed = q.to(tl.int64)
+    Q = tl.where(negative, -signed - (remainder != 0).to(tl.int64), signed)
+    R = tl.where(negative & (remainder != 0), denominator - remainder, remainder).to(tl.int64)
+    return Q, R
+
+
+@triton.jit
+def _div_round_recip(a, p, r, NIT: tl.constexpr):
+    denominator = r.to(tl.uint64)
+    inverse = tl.full((), 0xFFFFFFFFFFFFFFFF, tl.uint64) // denominator
+    Q, R = _signed_qr(a, denominator, inverse)
+    left = tl.maximum(p, 0)
+    for _ in tl.static_range(NIT):
+        c = tl.minimum(left, 28)
+        X = R << c
+        q1, remainder = _unsigned_qr(X.to(tl.uint64), denominator, inverse)
+        Q = (Q << c) + q1.to(tl.int64)
+        R = remainder.to(tl.int64)
+        left -= c
+    up = Q + (2 * R >= r).to(tl.int64)
+    k = tl.minimum(tl.maximum(-p, 1), 62)
+    down = (Q + ((Q * 0 + 1) << (k - 1))) >> k
+    return tl.where(p >= 0, up, down)
+
+@triton.jit
 def _norm_kernel(x_ptr, y_ptr, ids_ptr, gm_ptr, ge_ptr, xo_ptr, q_ptr, sh_ptr, err_ptr,
                  K2: tl.constexpr, LG: tl.constexpr, MODE: tl.constexpr, NORM: tl.constexpr,
-                 STORE: tl.constexpr):
+                 STORE: tl.constexpr, RECIP: tl.constexpr = False):
     """One program per row. MODE 0: x = emb[ids] (x_ptr int32 table); 1: x = x_ptr + y_ptr; 2: x = x_ptr (int64)."""
     row = tl.program_id(0).to(tl.int64)
     col = tl.arange(0, K2)
@@ -111,7 +165,10 @@ def _norm_kernel(x_ptr, y_ptr, ids_ptr, gm_ptr, ge_ptr, xo_ptr, q_ptr, sh_ptr, e
         # ndiv + quant(., -FN)
         gm = tl.load(gm_ptr + col)
         ge = tl.load(ge_ptr + col)
-        P = _div_round(x * gm, ge - FRC - er + FNC, r, 3)
+        if RECIP:
+            P = _div_round_recip(x * gm, ge - FRC - er + FNC, r, 3)
+        else:
+            P = _div_round(x * gm, ge - FRC - er + FNC, r, 3)
         sh = _quant_sh(tl.max(tl.abs(P), 0), -FNC)
         q = _rshc(P, sh + FNC)
         tl.store(q_ptr + row * K2 + col, q.to(tl.int32))
@@ -192,6 +249,21 @@ def _attn_out_kernel(num_ptr, den_ptr, q_ptr, sh_ptr, K2: tl.constexpr, HDC: tl.
 
 
 @triton.jit
+def _attn_recip_kernel(num_ptr, den_ptr, q_ptr, sh_ptr, K2: tl.constexpr, HDC: tl.constexpr):
+    row = tl.program_id(0).to(tl.int64)
+    hc: tl.constexpr = K2 // HDC
+    head = tl.arange(0, hc)
+    lane = tl.arange(0, HDC)
+    col = head[:, None] * HDC + lane[None, :]
+    a = tl.load(num_ptr + row * K2 + col)
+    denominator = tl.load(den_ptr + row * hc + head).to(tl.int64)[:, None]
+    o = _div_round_recip(a, a * 0 + FRVC, denominator, 1)
+    flat = tl.reshape(o, (K2,))
+    sh = _quant_sh(tl.max(tl.abs(flat), 0), -FRC)
+    tl.store(q_ptr + row * K2 + tl.arange(0, K2), _rshc(flat, sh + FRC).to(tl.int32))
+    tl.store(sh_ptr + row, sh)
+
+@triton.jit
 def _silu_p(g, u, lut_ptr):
     """ops.silu_mul: P = silu(g) * u (int64) and the per-element bound violation (ok is False)."""
     a = tl.minimum(tl.abs(g), 64 << FRC)
@@ -237,6 +309,31 @@ def _silu_kernel(y_ptr, lut_ptr, q_ptr, sh_ptr, err_ptr, FF, CH: tl.constexpr):
         tl.store(q_ptr + row * FF + c0 + lane, _rshc(P, sh + 2 * FRC).to(tl.int32), mask=ok)
 
 
+@triton.jit
+def _silu_cached_kernel(y_ptr, lut_ptr, p_ptr, q_ptr, sh_ptr, err_ptr, FF, CH: tl.constexpr):
+    row = tl.program_id(0).to(tl.int64)
+    lane = tl.arange(0, CH)
+    yr = y_ptr + row * (2 * FF)
+    mx = tl.zeros([CH], tl.int64)
+    nbad = tl.zeros([CH], tl.int32)
+    for c0 in range(0, FF, CH):
+        ok = c0 + lane < FF
+        g = tl.load(yr + c0 + lane, mask=ok, other=0)
+        u = tl.load(yr + FF + c0 + lane, mask=ok, other=0)
+        P, bad = _silu_p(g, u, lut_ptr)
+        tl.store(p_ptr + row * FF + c0 + lane, P, mask=ok)
+        mx = tl.maximum(mx, tl.abs(P))
+        nbad += (bad & ok).to(tl.int32)
+    _flagged(err_ptr, tl.sum(nbad, 0) > 0)
+    sh = _quant_sh(tl.max(mx, 0), -2 * FRC)
+    tl.store(sh_ptr + row, sh)
+    tl.debug_barrier()
+    for c0 in range(0, FF, CH):
+        ok = c0 + lane < FF
+        P = tl.load(p_ptr + row * FF + c0 + lane, mask=ok, other=0)
+        tl.store(q_ptr + row * FF + c0 + lane, _rshc(P, sh + 2 * FRC).to(tl.int32), mask=ok)
+
+
 NW_NORM, NW_ATTN, NW_SILU = 8, 8, 8
 
 
@@ -250,8 +347,9 @@ def _norm(m, x, y, ids, gamma, fl, mode, norm, store):
     sh = torch.empty(M, dtype=torch.long, device=m.dev) if norm else xo
     gm, ge = gamma if gamma is not None else (xo, xo)
     if M:
+        recip = norm and D == 4096 and M <= 128
         _norm_kernel[(M,)](m.emb if mode == 0 else x, y, ids, gm, ge, xo, q, sh, fl, K2=D, LG=D.bit_length() - 1,
-                           MODE=mode, NORM=norm, STORE=store, num_warps=NW_NORM)
+                           MODE=mode, NORM=norm, STORE=store, RECIP=recip, num_warps=16 if recip else NW_NORM)
     return xo, q, sh
 
 
@@ -295,7 +393,9 @@ def attn_out(m, num, den):
     K2 = m.H * m.HD
     q = torch.empty(N, K2, dtype=torch.int32, device=m.dev)
     sh = torch.empty(N, dtype=torch.long, device=m.dev)
-    if N:
+    if 0 < N <= 128 and K2 == 4096 and m.HD == 128:
+        _attn_recip_kernel[(N,)](num, den, q, sh, K2=K2, HDC=m.HD, num_warps=16)
+    elif N:
         _attn_out_kernel[(N,)](num, den, q, sh, K2=K2, HDC=m.HD, num_warps=NW_ATTN)
     return q, sh
 
@@ -305,6 +405,10 @@ def silu_quant(m, y, lut, fl):
     N, FF = y.shape[0], y.shape[1] // 2
     q = torch.empty(N, FF, dtype=torch.int32, device=m.dev)
     sh = torch.empty(N, dtype=torch.long, device=m.dev)
-    if N:
+    if 0 < N <= 128 and FF == 14336:
+        # Measured 8B batches reuse the exact first-pass products instead of recomputing SiLU.
+        scratch = torch.empty(N, FF, dtype=torch.long, device=m.dev)
+        _silu_cached_kernel[(N,)](y, lut, scratch, q, sh, fl, FF, CH=2048, num_warps=16)
+    elif N:
         _silu_kernel[(N,)](y, lut, q, sh, fl, FF, CH=min(2048, triton.next_power_of_2(FF)), num_warps=NW_SILU)
     return q, sh
