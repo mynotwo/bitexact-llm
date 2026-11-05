@@ -191,6 +191,10 @@ class BitExactLlamaForCausalLM(nn.Module):
         qsl = meta.query_start_loc.cpu().tolist()
         R = len(meta.seq_lens)
         n = min(qsl[R], N)
+        if n == N == R and self.spec_q == 1 and qsl[R] == R:
+            # uniform decode: the device-only path vLLM captures; its warm-up run before each capture comes
+            # through here, so the compiled stages are built outside the capture
+            return self._captured_decode(input_ids, positions, meta)
         rmap = torch.zeros(N, dtype=torch.long)
         rmap[:n] = torch.repeat_interleave(torch.arange(R), torch.diff(torch.tensor(qsl[:R + 1])))[:n]
         slot = torch.full((N,), -1, dtype=torch.long, device=input_ids.device)
