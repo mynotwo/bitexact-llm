@@ -291,7 +291,7 @@ class BitExactLlamaForCausalLM(nn.Module):
         R = head.R
         assert torch.equal(pre[1], head.mant[:R]) and torch.equal(pre[2], head.e[:R]), "graph logits: norm differs"
         assert torch.equal(join_limbs(c, R, 2), join_limbs(head.c, head.M, 2)[:R]), "graph logits: GEMM differs"
-        if mm.gate.item():
+        if self.gate.item():
             _, y2 = tri_sample.head(tri_sample.Head(c, *mm.lm[1:], pre[1], pre[2]), "none")
             assert torch.equal(y, y2), "graph logits: greedy tokens differ"
 
