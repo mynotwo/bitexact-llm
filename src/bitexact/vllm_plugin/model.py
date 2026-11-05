@@ -47,7 +47,7 @@ def _check_on_output():
     def get_output(self):
         out = get(self)
         if MODEL is not None and bool(MODEL.flag):
-            raise OverflowError("integer bound violated (int8/model.py)")
+            raise OverflowError("integer bound violated (int8/model.py or exact)")
         return out
     get_output.bitexact = True
     AsyncOutput.get_output = get_output
@@ -75,9 +75,14 @@ class BitExactLlamaForCausalLM(nn.Module):
         c = torch.load(path, map_location="cpu", weights_only=False)
         _extend_rope(c, vllm_config.model_config.model, vllm_config.model_config.max_model_len)
         dev = torch.device("cuda", torch.cuda.current_device())
-        self.m = IntLlama(c, dev, nl=int(getattr(cfg, "bitexact_nl", 2)),
-                          compiled=bool(int(os.environ.get("BITEXACT_COMPILE", "1"))))
-        self.m.ptab = tri_paged.weight_table(self.m.exp)
+        compiled = bool(int(os.environ.get("BITEXACT_COMPILE", "1")))
+        self.exact = "lm.limbs" in c                    # constants of exact mode (bf16 weights) or int8 mode
+        if self.exact:
+            from bitexact.vllm_plugin.exact_run import ExactEngine
+            self.m = ExactEngine(c, dev, compiled=compiled)
+        else:
+            self.m = IntLlama(c, dev, nl=int(getattr(cfg, "bitexact_nl", 2)), compiled=compiled)
+            self.m.ptab = tri_paged.weight_table(self.m.exp)
         # Plugin-side graphs only when vLLM's own are off (enforce_eager); otherwise vLLM captures
         # uniform decode batches through _captured_decode.
         self.use_graphs = bool(int(os.environ.get("BITEXACT_GRAPHS", "1"))) and \
@@ -130,6 +135,10 @@ class BitExactLlamaForCausalLM(nn.Module):
         N = input_ids.shape[0]
         bt = meta.block_table
         R = bt.shape[0]
+        if self.exact:                                     # one table row per request; rmap = row of each token
+            rmap = torch.arange(N, device=bt.device) // self.spec_q
+            return self.m.forward([a.kv_cache for a in self.attn], input_ids, positions, meta.slot_mapping[:N], bt,
+                                  rmap.clamp(max=R - 1))
         if R != N and self.spec_q > 1:
             # speculative decoding: uniform q = N / R query tokens per request (verify rows), each row attends
             # with its own position (causal) through its request's block table
@@ -144,6 +153,8 @@ class BitExactLlamaForCausalLM(nn.Module):
         meta = self._meta()
         if meta is not None and torch.cuda.is_current_stream_capturing():
             return self._captured_decode(input_ids, positions, meta)
+        if self.exact:
+            return self._forward_exact(input_ids, positions, meta)
         x = self.embed_input_ids(input_ids) if inputs_embeds is None else inputs_embeds.long()
         N = x.shape[0]
         plan = None if meta is None else paged.make_plan(meta, N, positions, self.qdim)
@@ -169,6 +180,23 @@ class BitExactLlamaForCausalLM(nn.Module):
         self.m._flag(x.abs().amax() >= 1 << 42)
         return x
 
+    def _forward_exact(self, input_ids, positions, meta):
+        """Any mix of decode and prefill tokens: every token is a row with its request's block-table row."""
+        kvs = None if meta is None else [a.kv_cache for a in self.attn]
+        N = input_ids.shape[0]
+        if meta is None:
+            return self.m.forward(None, input_ids, positions, input_ids, input_ids, input_ids)
+        qsl = meta.query_start_loc.cpu().tolist()
+        R = len(meta.seq_lens)
+        n = min(qsl[R], N)
+        rmap = torch.zeros(N, dtype=torch.long)
+        rmap[:n] = torch.repeat_interleave(torch.arange(R), torch.diff(torch.tensor(qsl[:R + 1])))[:n]
+        slot = torch.full((N,), -1, dtype=torch.long, device=input_ids.device)
+        slot[:n] = meta.slot_mapping[:n]
+        pos = positions.clone()
+        pos[n:] = 0
+        return self.m.forward(kvs, input_ids, pos, slot, meta.block_table, rmap.to(input_ids.device))
+
     def _check_late(self):
         """The bound-violation flag without a host sync: m.err (sticky, ORed on the device) is copied to pinned
         memory each step and read in that step's AsyncOutput.get_output (_check_on_output), after vLLM's own
@@ -180,6 +208,12 @@ class BitExactLlamaForCausalLM(nn.Module):
 
     def compute_logits(self, hidden_states):
         mm = self.m
+        if self.exact:
+            li = mm.logits(hidden_states.long())
+            self._check_late()
+            STASH.head, STASH.logits = None, li
+            f, STASH.greedy = tri_logits.argmax_float(li, scale=2.0 ** -mm.FR)
+            return f
         if hidden_states.is_cuda and mm.nl == 2 and not mm.post_check:
             # LM-head GEMM, then one Triton pass over its output (tri_sample): no int64 logits are stored.
             pre = mm.sg.pre_norm(hidden_states.long(), mm.gf)

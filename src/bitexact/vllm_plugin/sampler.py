@@ -52,18 +52,18 @@ STASH = _Stash()
 _NOISY = None
 
 
-def _noisy_guess(li, raw, lnt, tn, td):
+def _noisy_guess(li, raw, lnt, tn, td, fr=FR):
     """Gumbel-max choice (sampling.sample + gumbel), compiled into fused kernels. Integer ops only
     (bitlen's float64 frexp is corrected to the exact integer), so it equals the eager result."""
     global _NOISY
     if _NOISY is None:
-        def f(li, raw, lnt, tn: int, td: int):
-            return sample(li, tn, td, gumbel(raw, lnt, FR))
+        def f(li, raw, lnt, tn: int, td: int, fr: int):
+            return sample(li, tn, td, gumbel(raw, lnt, fr))
         _NOISY = torch.compile(f, dynamic=True) if os.environ.get("BITEXACT_COMPILE", "1") == "1" else f
-    return _NOISY(li, raw, lnt, tn, td)
+    return _NOISY(li, raw, lnt, tn, td, fr)
 
 
-def integer_sample(li, seeds, ts, temps, lnt, greedy=None):
+def integer_sample(li, seeds, ts, temps, lnt, greedy=None, fr=FR):
     """li int64 [M, V]; per row seed, generated index t, (tn, td). Returns int64 [M] token ids. greedy: the
     first argmax of each row when already computed (tri_logits)."""
     from bitexact.vllm_plugin import gpu_pcg
@@ -79,7 +79,7 @@ def integer_sample(li, seeds, ts, temps, lnt, greedy=None):
             y = first_argmax(lg) if greedy is None else greedy if whole else greedy[idx]
         else:
             raw = gpu_pcg.raw_rows([(seeds[r], max(ts[r], 0)) for r in rows], li.device)
-            y = _noisy_guess(lg, raw, lnt, tn, td)
+            y = _noisy_guess(lg, raw, lnt, tn, td, fr)
         if whole:
             return y
         out[idx] = y
@@ -115,6 +115,7 @@ class IntSampler(LogitsProcessor):
         self.tn = np.zeros(n, dtype=np.int64)           # temperature T = tn / td (tn = 0: greedy)
         self.td = np.ones(n, dtype=np.int64)
         self.lnt = None
+        self.fr = FR
         self.log = os.environ.get("BITEXACT_HASH_LOG")
         self.strict = np.zeros(n, dtype=bool)
         self.active = None
@@ -159,7 +160,7 @@ class IntSampler(LogitsProcessor):
         assert (head is not None or li is not None) and n == logits.shape[0], "integer logits rows != vLLM rows"
         if self.lnt is None:
             from bitexact.vllm_plugin.model import MODEL
-            self.lnt = MODEL.m.ln
+            self.lnt, self.fr = MODEL.m.ln, MODEL.m.FR
         slots = ctx.idx_mapping_np
         plen = self.rs.prompt_len.np
         if len(slots) == n:                              # one logits row per request
@@ -180,7 +181,7 @@ class IntSampler(LogitsProcessor):
             temps = list(zip(tn.tolist(), td.tolist()))
             keys = list(zip(seeds.tolist(), np.maximum(ts, 0).tolist()))
         if head is None:
-            y = integer_sample(li, seeds.tolist(), ts.tolist(), temps, self.lnt, STASH.greedy)
+            y = integer_sample(li, seeds.tolist(), ts.tolist(), temps, self.lnt, STASH.greedy, self.fr)
         else:       # one pass over the GEMM output (rows with tn = 0 are greedy) that also writes vLLM's logits
             assert logits.is_contiguous()
             st = tri_sample.row_state(keys, temps) if wide else np.stack([seeds, np.maximum(ts, 0), tn, td], 1)
