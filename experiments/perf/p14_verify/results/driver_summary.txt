@@ -1,0 +1,272 @@
+08:14:07 driver start: base 6faf8ef repo e74549f stages: corr bench prof
+08:16:56 end pytest_base rc=0
+pytest base: 147 passed, 8 skipped, 33 warnings in 159.74s (0:02:39)
+08:20:13 end pytest_repo rc=0
+pytest repo: 147 passed, 8 skipped, 33 warnings in 186.40s (0:03:06)
+08:20:45 end base_exact_mixed rc=0
+08:21:18 end base_exact_greedy rc=0
+suite base int8 rc=0: compare_exit 0 compare_long_exit 0 
+suite repo int8 rc=0: compare_exit 0 compare_long_exit 0 
+08:21:53 end base_exact_logprobs rc=0
+08:22:27 end base_int8_mixed rc=0
+08:23:00 end base_int8_greedy rc=0
+suite base exact rc=0: compare_exit 0 compare_long_exit 0 
+suite repo exact rc=0: compare_exit 0 compare_long_exit 0 
+08:23:33 end base_int8_logprobs rc=0
+tokens base done
+08:24:02 end repo_exact_mixed rc=0
+08:24:35 end repo_exact_greedy rc=0
+check_plug repo rc=0
+check_plug base rc=0
+08:25:04 end repo_exact_logprobs rc=0
+08:25:32 end repo_int8_mixed rc=0
+08:26:00 end repo_int8_greedy rc=0
+08:26:29 end repo_int8_logprobs rc=0
+tokens repo done
+08:27:44 end base_ref rc=0
+08:28:50 end base_eager0 rc=0
+08:28:53 end base_cmp0 rc=0
+check8 base eager0: ref rows 192 plugin rows matched keys 192 diff 0
+08:29:53 end base_eager1 rc=0
+08:29:57 end base_cmp1 rc=0
+check8 base eager1: ref rows 192 plugin rows matched keys 192 diff 0
+08:31:11 end repo_ref rc=0
+08:32:22 end repo_eager0 rc=0
+08:32:26 end repo_cmp0 rc=0
+check8 repo eager0: ref rows 192 plugin rows matched keys 192 diff 0
+08:33:25 end repo_eager1 rc=0
+08:33:28 end repo_cmp1 rc=0
+check8 repo eager1: ref rows 192 plugin rows matched keys 192 diff 0
+08:33:59 end base_k0 rc=0
+08:34:32 end base_k3 rc=0
+spec base done
+08:35:03 end repo_k0 rc=0
+08:35:33 end repo_k3 rc=0
+spec repo done
+cmp OK repo_exact_ref.hash
+cmp OK repo_exact_alone_pc1.hash
+cmp OK repo_exact_alone_pc0.hash
+cmp OK repo_exact_busy_pc1_s0.hash
+cmp OK repo_exact_busy_pc0_s1.hash
+cmp OK repo_exact_busy_pc1_s2_b64.hash
+cmp OK repo_exact_busy_pc1_s3_preempt.hash
+cmp OK repo_exact_busy_eager_s4.hash
+cmp OK repo_exact_busy_vllmgraph_s5.hash
+cmp OK repo_exact_alone_vllmgraph.hash
+cmp OK repo_exact_long_ref.hash
+cmp OK repo_exact_long_alone.hash
+cmp OK repo_exact_long_busy.hash
+cmp OK repo_exact_long_busy_eager.hash
+cmp OK repo_int8_ref.hash
+cmp OK repo_int8_alone_pc1.hash
+cmp OK repo_int8_alone_pc0.hash
+cmp OK repo_int8_busy_pc1_s0.hash
+cmp OK repo_int8_busy_pc0_s1.hash
+cmp OK repo_int8_busy_pc1_s2_b64.hash
+cmp OK repo_int8_busy_pc1_s3_preempt.hash
+cmp OK repo_int8_busy_eager_s4.hash
+cmp OK repo_int8_busy_vllmgraph_s5.hash
+cmp OK repo_int8_alone_vllmgraph.hash
+cmp OK repo_int8_long_ref.hash
+cmp OK repo_int8_long_alone.hash
+cmp OK repo_int8_long_busy.hash
+cmp OK repo_int8_long_busy_eager.hash
+tokens exact mixed IDENTICAL
+tokens exact greedy IDENTICAL
+tokens exact logprobs IDENTICAL
+tokens int8 mixed IDENTICAL
+tokens int8 greedy IDENTICAL
+tokens int8 logprobs IDENTICAL
+corr done 08:35:34
+08:36:02 end e1_B1_T0_repo_r1 rc=0
+08:36:31 end e1_B1_T0_base_r1 rc=0
+08:37:00 end e1_B1_T1_repo_r1 rc=0
+08:37:29 end e1_B1_T1_base_r1 rc=0
+08:38:16 end e8_B1_T0_repo_r1 rc=0
+08:39:05 end e8_B1_T0_base_r1 rc=0
+08:39:32 end i1_B1_T0_repo_r1 rc=0
+08:40:05 end i8_B1_T0_repo_r1 rc=0
+08:40:31 end f1_B1_T0_repo_r1 rc=0
+08:40:59 end f8_B1_T0_repo_r1 rc=0
+08:41:25 end n1_B1_T0_repo_r1 rc=0
+08:42:06 end n8_B1_T0_repo_r1 rc=0
+08:42:36 end e1_B32_T0_repo_r1 rc=0
+08:43:05 end e1_B32_T0_base_r1 rc=0
+08:43:36 end e1_B32_T1_repo_r1 rc=0
+08:44:06 end e1_B32_T1_base_r1 rc=0
+08:44:55 end e8_B32_T0_repo_r1 rc=0
+08:45:46 end e8_B32_T0_base_r1 rc=0
+08:46:16 end i1_B32_T0_repo_r1 rc=0
+08:46:50 end i8_B32_T0_repo_r1 rc=0
+08:47:15 end f1_B32_T0_repo_r1 rc=0
+08:47:48 end f8_B32_T0_repo_r1 rc=0
+08:48:14 end n1_B32_T0_repo_r1 rc=0
+08:48:58 end n8_B32_T0_repo_r1 rc=0
+08:49:35 end e1_B128_T0_repo_r1 rc=0
+08:50:10 end e1_B128_T0_base_r1 rc=0
+08:50:43 end e1_B128_T1_repo_r1 rc=0
+08:51:16 end e1_B128_T1_base_r1 rc=0
+08:52:18 end e8_B128_T0_repo_r1 rc=0
+08:53:22 end e8_B128_T0_base_r1 rc=0
+08:53:51 end i1_B128_T0_repo_r1 rc=0
+08:54:30 end i8_B128_T0_repo_r1 rc=0
+08:54:59 end f1_B128_T0_repo_r1 rc=0
+08:55:33 end f8_B128_T0_repo_r1 rc=0
+08:55:59 end n1_B128_T0_repo_r1 rc=0
+08:56:45 end n8_B128_T0_repo_r1 rc=0
+bench rep 1 done 08:56:45
+08:57:15 end e1_B1_T0_base_r2 rc=0
+08:57:44 end e1_B1_T0_repo_r2 rc=0
+08:58:12 end e1_B1_T1_base_r2 rc=0
+08:58:40 end e1_B1_T1_repo_r2 rc=0
+08:59:28 end e8_B1_T0_base_r2 rc=0
+09:00:16 end e8_B1_T0_repo_r2 rc=0
+09:00:43 end i1_B1_T0_repo_r2 rc=0
+09:01:17 end i8_B1_T0_repo_r2 rc=0
+09:01:43 end f1_B1_T0_repo_r2 rc=0
+09:02:12 end f8_B1_T0_repo_r2 rc=0
+09:02:37 end n1_B1_T0_repo_r2 rc=0
+09:03:21 end n8_B1_T0_repo_r2 rc=0
+09:03:53 end e1_B32_T0_base_r2 rc=0
+09:04:27 end e1_B32_T0_repo_r2 rc=0
+09:04:57 end e1_B32_T1_base_r2 rc=0
+09:05:27 end e1_B32_T1_repo_r2 rc=0
+09:06:20 end e8_B32_T0_base_r2 rc=0
+09:07:10 end e8_B32_T0_repo_r2 rc=0
+09:07:40 end i1_B32_T0_repo_r2 rc=0
+09:08:17 end i8_B32_T0_repo_r2 rc=0
+09:08:42 end f1_B32_T0_repo_r2 rc=0
+09:09:12 end f8_B32_T0_repo_r2 rc=0
+09:09:36 end n1_B32_T0_repo_r2 rc=0
+09:10:22 end n8_B32_T0_repo_r2 rc=0
+09:10:54 end e1_B128_T0_base_r2 rc=0
+09:11:28 end e1_B128_T0_repo_r2 rc=0
+09:12:00 end e1_B128_T1_base_r2 rc=0
+09:12:35 end e1_B128_T1_repo_r2 rc=0
+09:13:39 end e8_B128_T0_base_r2 rc=0
+09:14:40 end e8_B128_T0_repo_r2 rc=0
+09:15:09 end i1_B128_T0_repo_r2 rc=0
+09:15:48 end i8_B128_T0_repo_r2 rc=0
+09:16:15 end f1_B128_T0_repo_r2 rc=0
+09:16:49 end f8_B128_T0_repo_r2 rc=0
+09:17:15 end n1_B128_T0_repo_r2 rc=0
+09:18:01 end n8_B128_T0_repo_r2 rc=0
+bench rep 2 done 09:18:01
+09:18:34 end e1_B1_T0_repo_r3 rc=0
+09:19:04 end e1_B1_T0_base_r3 rc=0
+09:19:34 end e1_B1_T1_repo_r3 rc=0
+09:20:04 end e1_B1_T1_base_r3 rc=0
+09:20:50 end e8_B1_T0_repo_r3 rc=0
+09:21:37 end e8_B1_T0_base_r3 rc=0
+09:22:04 end i1_B1_T0_repo_r3 rc=0
+09:22:39 end i8_B1_T0_repo_r3 rc=0
+09:23:03 end f1_B1_T0_repo_r3 rc=0
+09:23:31 end f8_B1_T0_repo_r3 rc=0
+09:23:56 end n1_B1_T0_repo_r3 rc=0
+09:24:38 end n8_B1_T0_repo_r3 rc=0
+09:25:07 end e1_B32_T0_repo_r3 rc=0
+09:25:37 end e1_B32_T0_base_r3 rc=0
+09:26:06 end e1_B32_T1_repo_r3 rc=0
+09:26:37 end e1_B32_T1_base_r3 rc=0
+09:27:27 end e8_B32_T0_repo_r3 rc=0
+09:28:18 end e8_B32_T0_base_r3 rc=0
+09:28:46 end i1_B32_T0_repo_r3 rc=0
+09:29:22 end i8_B32_T0_repo_r3 rc=0
+09:29:49 end f1_B32_T0_repo_r3 rc=0
+09:30:18 end f8_B32_T0_repo_r3 rc=0
+09:30:44 end n1_B32_T0_repo_r3 rc=0
+09:31:26 end n8_B32_T0_repo_r3 rc=0
+09:31:59 end e1_B128_T0_repo_r3 rc=0
+09:32:32 end e1_B128_T0_base_r3 rc=0
+09:33:06 end e1_B128_T1_repo_r3 rc=0
+09:33:41 end e1_B128_T1_base_r3 rc=0
+09:34:44 end e8_B128_T0_repo_r3 rc=0
+09:35:48 end e8_B128_T0_base_r3 rc=0
+09:36:19 end i1_B128_T0_repo_r3 rc=0
+09:36:56 end i8_B128_T0_repo_r3 rc=0
+09:37:25 end f1_B128_T0_repo_r3 rc=0
+09:38:00 end f8_B128_T0_repo_r3 rc=0
+09:38:27 end n1_B128_T0_repo_r3 rc=0
+09:39:11 end n8_B128_T0_repo_r3 rc=0
+bench rep 3 done 09:39:11
+09:39:42 end e1_B1_T0_base_r4 rc=0
+09:40:10 end e1_B1_T0_repo_r4 rc=0
+09:40:40 end e1_B1_T1_base_r4 rc=0
+09:41:09 end e1_B1_T1_repo_r4 rc=0
+09:41:57 end e8_B1_T0_base_r4 rc=0
+09:42:43 end e8_B1_T0_repo_r4 rc=0
+09:43:10 end i1_B1_T0_repo_r4 rc=0
+09:43:43 end i8_B1_T0_repo_r4 rc=0
+09:44:09 end f1_B1_T0_repo_r4 rc=0
+09:44:39 end f8_B1_T0_repo_r4 rc=0
+09:45:03 end n1_B1_T0_repo_r4 rc=0
+09:45:47 end n8_B1_T0_repo_r4 rc=0
+09:46:17 end e1_B32_T0_base_r4 rc=0
+09:46:49 end e1_B32_T0_repo_r4 rc=0
+09:47:18 end e1_B32_T1_base_r4 rc=0
+09:47:52 end e1_B32_T1_repo_r4 rc=0
+09:48:46 end e8_B32_T0_base_r4 rc=0
+09:49:36 end e8_B32_T0_repo_r4 rc=0
+09:50:04 end i1_B32_T0_repo_r4 rc=0
+09:50:38 end i8_B32_T0_repo_r4 rc=0
+09:51:03 end f1_B32_T0_repo_r4 rc=0
+09:51:32 end f8_B32_T0_repo_r4 rc=0
+09:51:57 end n1_B32_T0_repo_r4 rc=0
+09:52:41 end n8_B32_T0_repo_r4 rc=0
+09:53:16 end e1_B128_T0_base_r4 rc=0
+09:53:50 end e1_B128_T0_repo_r4 rc=0
+09:54:22 end e1_B128_T1_base_r4 rc=0
+09:54:57 end e1_B128_T1_repo_r4 rc=0
+09:56:01 end e8_B128_T0_base_r4 rc=0
+09:57:02 end e8_B128_T0_repo_r4 rc=0
+09:57:30 end i1_B128_T0_repo_r4 rc=0
+09:58:09 end i8_B128_T0_repo_r4 rc=0
+09:58:38 end f1_B128_T0_repo_r4 rc=0
+09:59:14 end f8_B128_T0_repo_r4 rc=0
+09:59:42 end n1_B128_T0_repo_r4 rc=0
+10:00:26 end n8_B128_T0_repo_r4 rc=0
+bench rep 4 done 10:00:26
+10:00:55 end e1_B1_T0_repo_r5 rc=0
+10:01:23 end e1_B1_T0_base_r5 rc=0
+10:01:54 end e1_B1_T1_repo_r5 rc=0
+10:02:23 end e1_B1_T1_base_r5 rc=0
+10:03:11 end e8_B1_T0_repo_r5 rc=0
+10:04:00 end e8_B1_T0_base_r5 rc=0
+10:04:30 end i1_B1_T0_repo_r5 rc=0
+10:05:04 end i8_B1_T0_repo_r5 rc=0
+10:05:31 end f1_B1_T0_repo_r5 rc=0
+10:05:59 end f8_B1_T0_repo_r5 rc=0
+10:06:24 end n1_B1_T0_repo_r5 rc=0
+10:07:08 end n8_B1_T0_repo_r5 rc=0
+10:07:40 end e1_B32_T0_repo_r5 rc=0
+10:08:10 end e1_B32_T0_base_r5 rc=0
+10:08:41 end e1_B32_T1_repo_r5 rc=0
+10:09:11 end e1_B32_T1_base_r5 rc=0
+10:10:00 end e8_B32_T0_repo_r5 rc=0
+10:10:52 end e8_B32_T0_base_r5 rc=0
+10:11:20 end i1_B32_T0_repo_r5 rc=0
+10:11:55 end i8_B32_T0_repo_r5 rc=0
+10:12:20 end f1_B32_T0_repo_r5 rc=0
+10:12:51 end f8_B32_T0_repo_r5 rc=0
+10:13:17 end n1_B32_T0_repo_r5 rc=0
+10:14:01 end n8_B32_T0_repo_r5 rc=0
+10:14:34 end e1_B128_T0_repo_r5 rc=0
+10:15:07 end e1_B128_T0_base_r5 rc=0
+10:15:41 end e1_B128_T1_repo_r5 rc=0
+10:16:15 end e1_B128_T1_base_r5 rc=0
+10:17:17 end e8_B128_T0_repo_r5 rc=0
+10:18:21 end e8_B128_T0_base_r5 rc=0
+10:18:51 end i1_B128_T0_repo_r5 rc=0
+10:19:30 end i8_B128_T0_repo_r5 rc=0
+10:19:59 end f1_B128_T0_repo_r5 rc=0
+10:20:35 end f8_B128_T0_repo_r5 rc=0
+10:21:01 end n1_B128_T0_repo_r5 rc=0
+10:21:46 end n8_B128_T0_repo_r5 rc=0
+bench rep 5 done 10:21:46
+bench done
+10:22:23 end base_1b rc=0
+10:23:47 end base_8b rc=0
+10:24:24 end repo_1b rc=0
+10:25:44 end repo_8b rc=0
+prof done
+10:25:44 ALLDONE

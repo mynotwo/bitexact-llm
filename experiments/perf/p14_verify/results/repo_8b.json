@@ -1,0 +1,261 @@
+{
+ "tag": "repo_8b",
+ "model": "exact8bmodel",
+ "batch": 128,
+ "eager": false,
+ "temp": 0.0,
+ "in_len": 128,
+ "out_len": 128,
+ "out_tokens": 16384,
+ "sec": 7.27,
+ "tok_per_s": 2253.6,
+ "bitexact_src": "/data41/audreymao/perf14_20261106/verify/repo/src/bitexact",
+ "timing": {
+  "steps": 128,
+  "prefill_step_ms": 18.611,
+  "prefill_host_exec_ms": 16.284,
+  "prefill_host_sample_ms": 0.808,
+  "decode_step_ms_median": 30.793,
+  "decode_step_ms_mean": 30.608,
+  "decode_host_exec_ms": 0.809,
+  "decode_host_sample_ms": 0.803
+ },
+ "prefill": {
+  "start": 0,
+  "steps": 1,
+  "kernels_per_step": 405.0,
+  "kernel_ms_per_step": 3371.345,
+  "busy_ms_per_step": 3371.3429,
+  "span_ms_per_step": 3374.3477,
+  "gpu_idle_ms_per_step": 3.0049,
+  "buckets_ms_per_step": {
+   "gemm_int8": 2814.2955,
+   "gemm_bf16": 0.0,
+   "elementwise": 340.0283,
+   "attention": 157.0298,
+   "kv_write": 0.0,
+   "sampling_logits": 1.7396,
+   "memcpy": 0.0181,
+   "other": 58.2336
+  },
+  "sampling_logits_split_ms": {
+   "rest": 0.5676,
+   "gemm": 1.172
+  },
+  "host_exec_ms_per_step": 20.6627,
+  "host_sample_ms_per_step": 0.9942,
+  "unattributed_kernel_ms_total": 0.0,
+  "top": [
+   {
+    "name": "_lin_kernel",
+    "bucket": "gemm_int8",
+    "ms_per_step": 2814.2955,
+    "calls_per_step": 128.0
+   },
+   {
+    "name": "_norm_kernel",
+    "bucket": "elementwise",
+    "ms_per_step": 171.3762,
+    "calls_per_step": 65.0
+   },
+   {
+    "name": "_silu_kernel",
+    "bucket": "elementwise",
+    "ms_per_step": 168.511,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "_xacc_kernel",
+    "bucket": "attention",
+    "ms_per_step": 157.0276,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "_attn_out_kernel",
+    "bucket": "other",
+    "ms_per_step": 42.0428,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "_qkv_kernel",
+    "bucket": "other",
+    "ms_per_step": 16.148,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "_wgmma",
+    "bucket": "sampling_logits",
+    "ms_per_step": 1.172,
+    "calls_per_step": 1.0
+   },
+   {
+    "name": "_epilogue",
+    "bucket": "sampling_logits",
+    "ms_per_step": 0.3842,
+    "calls_per_step": 1.0
+   },
+   {
+    "name": "void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_",
+    "bucket": "elementwise",
+    "ms_per_step": 0.113,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "_part_kernel",
+    "bucket": "sampling_logits",
+    "ms_per_step": 0.0683,
+    "calls_per_step": 1.0
+   },
+   {
+    "name": "_gumbel_sample_kernel",
+    "bucket": "sampling_logits",
+    "ms_per_step": 0.0527,
+    "calls_per_step": 1.0
+   },
+   {
+    "name": "_apply_write_kernel",
+    "bucket": "other",
+    "ms_per_step": 0.0319,
+    "calls_per_step": 4.0
+   },
+   {
+    "name": "_norm_kernel",
+    "bucket": "sampling_logits",
+    "ms_per_step": 0.0113,
+    "calls_per_step": 1.0
+   },
+   {
+    "name": "_prepare_prefill_inputs_kernel",
+    "bucket": "elementwise",
+    "ms_per_step": 0.0081,
+    "calls_per_step": 1.0
+   },
+   {
+    "name": "Memcpy DtoH (Device -> Pinned)",
+    "bucket": "sampling_logits",
+    "ms_per_step": 0.0073,
+    "calls_per_step": 3.0
+   }
+  ],
+  "profiled_wall_ms_per_step": 21.766
+ },
+ "decode": {
+  "start": 8,
+  "steps": 16,
+  "kernels_per_step": 588.1,
+  "kernel_ms_per_step": 29.8645,
+  "busy_ms_per_step": 29.8625,
+  "span_ms_per_step": 30.2181,
+  "gpu_idle_ms_per_step": 0.3556,
+  "buckets_ms_per_step": {
+   "gemm_int8": 2.3137,
+   "gemm_bf16": 16.1898,
+   "elementwise": 2.0865,
+   "attention": 2.8804,
+   "kv_write": 0.0,
+   "sampling_logits": 1.6819,
+   "memcpy": 0.0064,
+   "other": 4.7058
+  },
+  "sampling_logits_split_ms": {
+   "rest": 0.5437,
+   "gemm": 1.1382
+  },
+  "host_exec_ms_per_step": 1.5816,
+  "host_sample_ms_per_step": 1.0262,
+  "unattributed_kernel_ms_total": 0.0,
+  "top": [
+   {
+    "name": "_wgmma",
+    "bucket": "gemm_bf16",
+    "ms_per_step": 16.1898,
+    "calls_per_step": 96.0
+   },
+   {
+    "name": "_epilogue",
+    "bucket": "other",
+    "ms_per_step": 3.8794,
+    "calls_per_step": 96.0
+   },
+   {
+    "name": "_xacc_kernel",
+    "bucket": "attention",
+    "ms_per_step": 2.8781,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "_lin_kernel",
+    "bucket": "gemm_int8",
+    "ms_per_step": 2.3137,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "_silu_cached_kernel",
+    "bucket": "elementwise",
+    "ms_per_step": 1.1968,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "_wgmma",
+    "bucket": "sampling_logits",
+    "ms_per_step": 1.1382,
+    "calls_per_step": 1.0
+   },
+   {
+    "name": "_norm_kernel",
+    "bucket": "elementwise",
+    "ms_per_step": 0.814,
+    "calls_per_step": 65.0
+   },
+   {
+    "name": "_stack",
+    "bucket": "other",
+    "ms_per_step": 0.3893,
+    "calls_per_step": 96.0
+   },
+   {
+    "name": "_epilogue",
+    "bucket": "sampling_logits",
+    "ms_per_step": 0.3832,
+    "calls_per_step": 1.0
+   },
+   {
+    "name": "_attn_recip_kernel",
+    "bucket": "other",
+    "ms_per_step": 0.2158,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "_qkv_kernel",
+    "bucket": "other",
+    "ms_per_step": 0.2053,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "_part_kernel",
+    "bucket": "sampling_logits",
+    "ms_per_step": 0.0672,
+    "calls_per_step": 1.0
+   },
+   {
+    "name": "void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_",
+    "bucket": "elementwise",
+    "ms_per_step": 0.0534,
+    "calls_per_step": 32.0
+   },
+   {
+    "name": "_gumbel_sample_kernel",
+    "bucket": "sampling_logits",
+    "ms_per_step": 0.0338,
+    "calls_per_step": 1.0
+   },
+   {
+    "name": "_norm_kernel",
+    "bucket": "sampling_logits",
+    "ms_per_step": 0.011,
+    "calls_per_step": 1.0
+   }
+  ],
+  "profiled_wall_ms_per_step": 28.425
+ }
+}
