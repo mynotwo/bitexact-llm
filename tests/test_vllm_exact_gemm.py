@@ -20,7 +20,7 @@ def test_fused_lin_matches_lin_y(const):
         lin = Lin(c, name, "cuda", "triton", False)
         fl = FusedLin(lin)
         K = lin.limbs.shape[2]
-        for M in (1, 3, 8, 9, 16, 17, 31, 32, 33, 64, 65, 127, 128, 129, 200, 1000):
+        for M in (1, 3, 8, 9, 16, 17, 20, 21, 31, 32, 33, 40, 41, 64, 65, 72, 73, 100, 105, 120, 127, 128, 129, 200, 1000):
             for lim, shr in ((1 << 22, (-30, -20)), (1 << 12, (-45, -8)), (3, (-70, 10))):
                 q = torch.randint(-lim, lim + 1, (M, K), device="cuda", generator=g).to(torch.int32)
                 sh = torch.randint(shr[0], shr[1], (M,), device="cuda", generator=g)

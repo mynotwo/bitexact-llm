@@ -295,6 +295,17 @@ class FusedLin:
                     return _stacked_linear(self, q, sh, flag, checked, None if M <= 64 else wgmma_cfg)
                 if shape in ((28672, 4096), (128256, 4096)) and M >= 17 and M != 64:
                     return _stacked_linear(self, q, sh, flag, checked, wgmma_cfg)
+                # 1B (p15_route1b sweep on H800): (lo, hi, variant) M ranges that win by >= 3% in every pair;
+                # variant None = torch._int_mm, wgmma_cfg = gemm_sm90. Unlisted M keep the fused _lin_kernel.
+                for lo, hi, variant in {
+                    (3072, 2048): ((17, 20, None), (41, 104, None), (105, 128, wgmma_cfg)),
+                    (2048, 2048): ((17, 20, None), (73, 88, wgmma_cfg), (89, 104, None)),
+                    (16384, 2048): ((73, 120, wgmma_cfg),),
+                    (2048, 8192): ((17, 40, None), (41, 128, wgmma_cfg)),
+                    (128256, 2048): ((17, 20, None), (21, 40, wgmma_cfg), (73, 88, wgmma_cfg), (105, 120, wgmma_cfg)),
+                }.get(shape, ()):
+                    if lo <= M <= hi:
+                        return _stacked_linear(self, q, sh, flag, checked, variant)
         cfg = self.cfg or next(c for mx, c in self.TABLE.get((self.N, K), self.DEFAULT) if M <= mx)
         BM, BN, BK, nw, ns = cfg
         y = torch.empty((M, self.N), dtype=torch.long, device=q.device)
