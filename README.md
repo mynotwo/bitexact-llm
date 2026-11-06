@@ -506,21 +506,25 @@ one session:
 
 | Configuration | Batch 1 | Batch 32 | Batch 128 |
 |---|---|---|---|
-| vLLM bf16, CUDA graphs (stock) | 612 | 16,128 | 33,831 |
-| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 214 | 7,549 | 34,487 |
-| integer plugin, exact mode (original bf16 weights) | 254 | 6,801 | 13,940 |
-| integer plugin, int8 mode (quantized weights) | 548 | 14,640 | 33,463 |
+| vLLM bf16, CUDA graphs (stock) | 609 | 15,920 | 33,387 |
+| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 215 | 7,583 | 34,560 |
+| integer plugin, exact mode (original bf16 weights) | 256 | 6,959 | 14,183 |
+| integer plugin, int8 mode (quantized weights) | 552 | 14,472 | 33,252 |
 | standalone exact engine (earlier session) | 223 | 3,321 | 5,615 |
 
 So serving the unmodified float model bit-exactly costs about 2.4x against stock vLLM: it is 1.19x batch-invariant
-vLLM at batch 1 and reaches 90% and 40% of it at batch 32 and 128. A profiled batch-128 decode step (prefix caching
+vLLM at batch 1 and reaches 92% and 41% of it at batch 32 and 128 (table from `experiments/perf/p14_verify`). A profiled batch-128 decode step (prefix caching
 off, as the profiler runs it, which costs `bench.py` a third of its throughput on this model) takes 8.4 ms against
 10.9, its kernel time 8.1 against 10.5: linears 4.9, sampling and LM head 1.2, elementwise 1.0, attention 0.7,
 the rest 0.2. The elementwise bucket is the one that moved (3.55 to 1.04 ms). The prefill of the 128 x 128 batch
 moved with it: its GPU kernel time fell from 957 to 667 ms and its host enqueue from 28.2 to 12.1 ms, over the same
 642 -> 227 kernels. The throughput numbers in the sections above are for int8 mode, a quantized model. 8B exact
-mode gives 66 / 1,363 / 3,088 tok/s (int8 mode 180 / 4,978 / 10,781 in the same run, same n = 5 medians), 2.7x
-over the 1,124 tok/s batch 128 measured before the fused elementwise kernels and the 8B GEMM table.
+mode gives 81 / 2,001 / 3,773 tok/s (int8 mode 180 / 5,002 / 10,775; vLLM bf16 152 / 4,505 / 14,054; vLLM
+batch-invariant 50 / 1,751 / 10,677; same session, n = 5 medians): 1.64x batch-invariant vLLM at batch 1, 1.14x at
+batch 32 and 35% of it at batch 128, and 3.4x over the 1,124 tok/s batch 128 measured before the fused elementwise
+kernels and the 8B GEMM work. The 8B gain over the previous README (66 / 1,363 / 3,088) comes from the 8B-only
+exact GEMM tuning, stacked limb GEMM, SiLU product reuse and integer reciprocals (`experiments/perf/p10_exact_gemm`,
+`p11_p13_exact`); 1B exact runs the same kernels as before.
 
 Plugin limitations:
 
