@@ -524,7 +524,8 @@ batch-invariant 50 / 1,751 / 10,677; same session, n = 5 medians): 1.64x batch-i
 batch 32 and 35% of it at batch 128, and 3.4x over the 1,124 tok/s batch 128 measured before the fused elementwise
 kernels and the 8B GEMM work. The 8B gain over the previous README (66 / 1,363 / 3,088) comes from the 8B-only
 exact GEMM tuning, stacked limb GEMM, SiLU product reuse and integer reciprocals (`experiments/perf/p10_exact_gemm`,
-`p11_p13_exact`); 1B exact runs the same kernels as before.
+`p11_p13_exact`); for 1B exact only the p10
+configuration tuning applies (+0% / +2.2% / +1.9% in the same run).
 
 Plugin limitations:
 
