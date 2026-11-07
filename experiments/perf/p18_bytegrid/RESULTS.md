@@ -179,25 +179,92 @@ layers 0 and 15 (2.69 and 2.75). 8B ranges 2.29 to 2.60, highest at layer 0 (2.5
 layers 1 to 30 between 2.29 and 2.48. Type and depth move the mean by under 1 exponent, with no tail: the maximum
 per row stays at 8 for block 32 on both models.
 
+## Free grid per 2D tile (N output rows x K weights)
+
+Same free grid (g = top - C), same literal rule (tau = 1e-4 of the tile's nonzeros), but the grid is chosen per tile:
+top and bot are taken over all N x K elements of the tile, so every row in the tile shares one grid. Shape 1 x K is
+the 1D per-row-block case from earlier sections and reproduces them (1B 1x32: 6.63 products, 2.57 distinct g,
+12.9 accumulators). Mean limbs are element-weighted; tiles of all-zero elements take L = 1, as in p17. All 16 layers of
+1B and all 32 layers of 8B, linear types only; lm_head separate in the JSON (1B 1x32 lm_head: 6.62).
+`tile_grid.py` checks the vectorized counts against a plain-Python loop on a 128 x 128 matrix (zero mismatches).
+
+Products (3 x mean limbs), L2 / L3 fraction of tiles, fraction of tiles still over 23 bits at L = 3, residual
+density at the chosen L, side data in bits per weight (8 / (N x K)):
+
+| Tile N x K | 1B products | 1B L2 / L3 | 1B over 23 | 1B resid. dens. | 8B products | 8B L2 / L3 | 8B over 23 | 8B resid. dens. | side bits/w |
+|---|---:|---|---:|---:|---:|---|---:|---:|---:|
+| 1 x 32 | 6.63 | 0.788 / 0.212 | 0.0009 | 2.90e-5 | 6.62 | 0.794 / 0.206 | 0.0009 | 2.92e-5 | 0.2500 |
+| 1 x 64 | 7.21 | 0.596 / 0.404 | 0.0020 | 3.19e-5 | 7.21 | 0.596 / 0.404 | 0.0021 | 3.36e-5 | 0.1250 |
+| 1 x 128 | 7.99 | 0.337 / 0.663 | 0.0044 | 3.44e-5 | 8.05 | 0.317 / 0.683 | 0.0049 | 3.81e-5 | 0.0625 |
+| 16 x 32 | 8.98 | 0.008 / 0.992 | 0.0235 | 4.66e-5 | 8.98 | 0.005 / 0.995 | 0.0234 | 4.67e-5 | 0.0156 |
+| 32 x 32 | 9.00 | 0 / 1 | 0.0532 | 5.37e-5 | 9.00 | 0 / 1 | 0.0491 | 5.04e-5 | 0.0078 |
+| 32 x 64 | 9.00 | 0 / 1 | 0.1150 | 6.05e-5 | 9.00 | 0 / 1 | 0.1008 | 5.42e-5 | 0.0039 |
+| 64 x 32 | 9.00 | 0 / 1 | 0.1165 | 6.15e-5 | 9.00 | 0 / 1 | 0.1031 | 5.55e-5 | 0.0039 |
+| 64 x 64 | 9.00 | 0 / 1 | 0.2397 | 6.89e-5 | 9.00 | 0 / 1 | 0.2058 | 6.05e-5 | 0.0020 |
+| 64 x 128 | 9.00 | 0 / 1 | 0.4434 | 7.58e-5 | 9.00 | 0 / 1 | 0.3850 | 6.64e-5 | 0.0010 |
+| 128 x 32 | 9.00 | 0 / 1 | 0.2442 | 7.06e-5 | 9.00 | 0 / 1 | 0.2076 | 6.08e-5 | 0.0020 |
+| 128 x 64 | 9.00 | 0 / 1 | 0.4528 | 7.81e-5 | 9.00 | 0 / 1 | 0.3884 | 6.69e-5 | 0.0010 |
+| 128 x 128 | 9.00 | 0 / 1 | 0.3834 | 8.58e-5 | 9.00 | 0 / 1 | 0.3040 | 7.46e-5 | 0.0005 |
+
+Accumulators per tile-row-group. A tile-row-group is the N rows of one row-block, over all K-tiles along K. Distinct g
+and distinct (g mod 8) are counted over those K-tiles (they were equal in every case here, as in p18b). Accumulators
+= 5 x distinct (g mod 8). Max K in one class is the largest total K-span sharing one (g mod 8) class over all
+row-groups. Headroom = 2^31 / (max K in one class x 3 x 128 x 128).
+
+| Tile N x K | 1B distinct g mean (p99, max) | 1B accumulators mean (p99, max) | 1B max K / class, headroom | 8B distinct g mean (p99, max) | 8B accumulators mean (p99, max) | 8B max K / class, headroom |
+|---|---|---|---|---|---|---|
+| 1 x 32 | 2.57 (4, 7) | 12.9 (20, 35) | 8000, 5.5x | 2.40 (4, 8) | 12.0 (20, 40) | 13472, 3.2x |
+| 1 x 64 | 2.11 (4, 6) | 10.6 (20, 30) | 8192, 5.3x | 2.16 (4, 7) | 10.8 (20, 35) | 14016, 3.1x |
+| 1 x 128 | 1.79 (3, 6) | 9.0 (15, 30) | 8192, 5.3x | 1.97 (3, 7) | 9.8 (15, 35) | 14336, 3.05x |
+| 16 x 32 | 2.20 (4, 5) | 11.0 (20, 25) | 7744, 5.6x | 2.18 (4, 6) | 10.9 (20, 30) | 14336, 3.05x |
+| 32 x 32 | 2.22 (4, 5) | 11.1 (20, 25) | 7648, 5.7x | 2.14 (4, 6) | 10.7 (20, 30) | 14336, 3.05x |
+| 32 x 64 | 2.10 (4, 5) | 10.5 (20, 25) | 8064, 5.4x | 2.07 (4, 5) | 10.4 (20, 25) | 14336, 3.05x |
+| 64 x 32 | 2.33 (4, 5) | 11.6 (20, 25) | 7968, 5.5x | 2.34 (4, 5) | 11.7 (20, 25) | 14336, 3.05x |
+| 64 x 64 | 2.17 (4, 5) | 10.8 (20, 25) | 8192, 5.3x | 2.23 (4, 5) | 11.2 (20, 25) | 14336, 3.05x |
+| 64 x 128 | 1.87 (4, 5) | 9.3 (20, 25) | 8192, 5.3x | 2.08 (4, 5) | 10.4 (20, 25) | 14336, 3.05x |
+| 128 x 32 | 2.46 (4, 5) | 12.3 (20, 25) | 8128, 5.4x | 2.53 (4, 5) | 12.6 (20, 25) | 14336, 3.05x |
+| 128 x 64 | 2.16 (4, 5) | 10.8 (20, 25) | 8192, 5.3x | 2.37 (4, 5) | 11.9 (20, 25) | 14336, 3.05x |
+| 128 x 128 | 1.89 (4, 5) | 9.4 (20, 25) | 8192, 5.3x | 2.20 (4, 5) | 11.0 (20, 25) | 14336, 3.05x |
+
+Reading the tables. (1) The tile does not lower the grid count. Every N x K tile still needs 1.9 to 2.5 distinct
+exponents per tile-row-group, and the count does not fall as N grows. The exponent variation is along K: each K-tile
+has its own top, and the N rows in a tile do not share one. Sharing a grid across rows removes no K-tile grids.
+(2) The tile raises the cost of the 23-bit window. With N rows sharing one top, the top is set by the widest row of
+the tile. For N of 16 or more, a 23-bit window fails for 2 to 45% of tiles, so L = 3 is forced and the residual
+exceeds the budget there. The product count sits at 9.00 for every tile of N of 32 or more. (3) At N = 16 the
+product count is 8.98, which is not a meaningful reduction.
+
+Verdict on the 2D question. No tile shape gives products meaningfully below 9 while the accumulator count stays
+near 5. Tiles with N of 32 or more give 9.00 products (no reduction). The only shape below 9 is 16 x 32 at 8.98
+products, a 0.2% reduction, with 11 accumulators per tile-row-group on average and max 25 (1B) or 30 (8B). The
+shapes that reduce products (1 x K) do so only with one row per grid, which keeps 9 to 13 accumulators per output
+element. The coordinator's premise that a shared 2D grid keeps accumulators at 5 is refuted by the distinct-g counts.
+
 ## Verdict
 
-Two questions, answered separately.
+Three questions, answered separately.
 
 (a) Byte-aligned and 4-aligned block grids are not worth a kernel. At block 32 they reach 8.55 and 8.21 products on
 1B (free grid 6.63) and 8.78 and 7.55 on 8B (free grid 6.69). Their stated purpose was to avoid extra shift
-classes, but the measured free-grid count is about 2.4 exponents per row, so that purpose is weak. This verdict
-stands regardless of the accumulator result below.
+classes, but the measured free-grid count is about 2.4 exponents per row, so that purpose is weak.
 
-(b) The free grid with per-exponent accumulators is a candidate. Measured: 12 to 13 accumulators per output element
-at block 32 on average (5 x distinct (g mod 8)), p99 20, max 40, and int32 headroom of at least 3.0x in the worst
-row of 8B. This is a count and a bound, not a timing. The remaining unknown is register pressure: a tile of output
-elements that holds 12 to 40 int32 accumulators per element, against 5 today, may not fit the register file at the
-tile shapes a kernel would use. Only a kernel can settle that. The next step is to time a per-exponent-class
-accumulator kernel on the free grid, not to build the byte-aligned variant.
+(b) The free grid per block (one row, one block of K) with per-exponent accumulators is the only layout measured that
+gets products below 9 meaningfully (6.63 at block 32). Measured: 12 to 13 accumulators per output element at block 32
+on average (5 x distinct (g mod 8)), p99 20, max 40, and int32 headroom of at least 3.05x in the worst row of 8B.
+The remaining unknown is register pressure: a tile of output elements that holds 12 to 40 int32 accumulators per
+element, against 5 today, may not fit the register file at the tile shapes a kernel would use. Only a timed kernel
+can settle that.
+
+(c) 2D tiles (N output rows sharing one grid) do not help. The best shape, 16 x 32, reaches 8.98 products, and every
+tile with N of 32 or more is at 9.00. Accumulator counts stay at 10 to 13 mean because the grid varies along K, not
+across rows. So the 2D tile is not a route to the 5-accumulator layout.
+
+Next step: time a per-exponent-class accumulator kernel on the free 1 x 32 layout. That is a separate study.
 
 ## What this supports and what it does not
 
-Supports: 8-aligned grids recover little (8.55 products at block 32 on 1B, 8.78 on 8B); 4-aligned grids recover more
+Supports: a shared grid across a 2D tile does not reduce the grid count or the accumulator count, and N of 32 or more
+leaves products at 9.00; 8-aligned grids recover little (8.55 products at block 32 on 1B, 8.78 on 8B); 4-aligned grids recover more
 (8.21, 7.55) at one extra shift class; the 1-limb case is impossible for any grid; the free grid needs about 2.4 to
 2.6 distinct exponents per row at block 32, against K/B; the mean varies by about one exponent across type and depth; the int32 bound holds on the free grid for both models.
 
@@ -227,6 +294,9 @@ CPU only, `CUDA_VISIBLE_DEVICES=""`, no GPU. Host `audreymao@10.154.162.141`, in
 - `code/free_rows.py MODEL_DIR TAG OUT_JSONL` (free grid, all six block sizes, per-row counts and class sizes;
   `--check` runs the brute-force comparison first)
 - `code/aggregate_rows.py OUT_JSONL OUT_JSON` (percentiles, distributions, accumulator and int32 tables)
+- `code/tile_grid.py MODEL_DIR TAG OUT_JSONL` (2D tile shapes, `--check` runs the brute-force comparison)
+- `code/aggregate_tiles.py OUT_JSONL OUT_JSON` (tile tables)
 
 Raw JSON-lines and CSVs stay on the host. The scripts in this directory are `analyze.py` (p17 plus aligned
-grids), `check_grid.py`, `summarize_grid.py`, `distinct_grid.py`, `free_rows.py` and `aggregate_rows.py`.
+grids), `check_grid.py`, `summarize_grid.py`, `distinct_grid.py`, `free_rows.py`, `aggregate_rows.py`,
+`tile_grid.py` and `aggregate_tiles.py`.
