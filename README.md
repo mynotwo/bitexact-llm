@@ -513,9 +513,9 @@ one session:
 | standalone exact engine (earlier session) | 223 | 3,321 | 5,615 |
 
 So serving the unmodified float model bit-exactly costs about 2.4x against stock vLLM: it is 1.19x batch-invariant
-vLLM at batch 1 and reaches 94% and 42% of it at batch 32 and 128. The vLLM and int8 rows are the n = 5 medians
-of `experiments/perf/p15_route1b`, which measured the
-pre-routing exact engine at 255 / 6,951 / 14,208 in its own session. A profiled batch-128 decode step (prefix caching
+vLLM at batch 1 and reaches 94% and 42% of it at batch 32 and 128. The exact row is the n = 5 median of
+`experiments/perf/p15_route1b`, which measured the pre-routing exact engine at 255 / 6,951 / 14,208 in that same
+session; the other rows are the `experiments/perf/p14_verify` session. A profiled batch-128 decode step (prefix caching
 off, as the profiler runs it, which costs `bench.py` a third of its throughput on this model) takes 8.4 ms against
 10.9, its kernel time 8.1 against 10.5: linears 4.9, sampling and LM head 1.2, elementwise 1.0, attention 0.7,
 the rest 0.2. The elementwise bucket is the one that moved (3.55 to 1.04 ms). Routing the 1B shapes to the stacked GEMM where it
