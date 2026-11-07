@@ -13,9 +13,10 @@ Byte-aligned (multiple of 8) grids keep little of the reduction. At block 32 the
 above the uniform-residue 3.5, so the alignment penalty is worse than uniform at the block size that matters.
 A multiple-of-4 grid keeps more: 2.74 limbs at block 32 (8.21 products) on 1B.
 
-Surprising side result: the number of distinct grid exponents in one output row is small. At block 32 with the
-free grid it is 2.6 on average (p90 3, max 7), not K/B. p17's accumulation estimate assumed K/B distinct
-exponents per row. This count does not support that assumption on 1B, and it is the more important finding here.
+Surprising side result, now measured on all layers of both models: the free grid needs few exponents per row.
+At block 32 a row needs 2.6 distinct grid exponents on 1B and 2.4 on 8B (max 8), not K/B. p17's accumulation
+estimate assumed K/B. This measurement refutes that assumption. Section "Accumulator classes and int32 headroom"
+gives the accumulator count and its int32 bound.
 
 ## Method
 
@@ -100,47 +101,110 @@ Headline: the penalty is not the uniform 3.5 bits. At blocks 32 and 64 the mean 
 uniform, because the residue sits near 6 and 7. At block 8 it is about 2.8, better than uniform. The byte-aligned
 penalty therefore depends on the block size and does not average out.
 
-## Distinct grid exponents per output row (1B, all 7 types)
+## Distinct grid exponents per output row (free grid, all layers)
 
-For each output row, count distinct grid exponents over its nonempty blocks. Free grid: g = top - 23 per block.
-8-aligned and 4-aligned: g = m floor(bot / m). The count is the number of accumulator shift classes a row needs.
+Free grid: g = top - 23 per block (3 limbs, exact for every block). For each output row, count distinct g over its
+nonempty blocks, and distinct (g mod 8). All 16 layers of 1B and all 32 layers of 8B, all 7 linear types; lm_head
+separate (1B ties lm_head to embed_tokens, so it is the embedding tensor). Counts are exact (histograms kept per
+tensor, percentiles from them). `free_rows.py` checks the vectorized counts against a plain-Python loop
+(`--check`, zero mismatches). Rows: 376,832 (1B), 1,376,256 (8B).
 
-| Block | free mean (p90, max) | 4-aligned | 8-aligned |
-|---|---|---|---|
-| 32 | 2.6 (3, 7) | 3.4 (4, 6) | 2.4 (3, 4) |
-| 16 | 2.9 (4, 7) | 3.4 (4, 6) | 2.4 (3, 4) |
+Distinct g per row, all linear layers:
 
-Per type, free grid at block 32: q 2.5, k 2.6, v 2.5, o 3.0, gate 2.5, up 2.5, down 3.0. Measured on 1B only; the
-8B run did not include this count.
+| Block | 1B mean | p50 | p90 | p99 | max | 8B mean | p50 | p90 | p99 | max |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 1.65 | 2 | 2 | 3 | 6 | 1.67 | 2 | 2 | 3 | 6 |
+| 128 | 1.79 | 2 | 2 | 3 | 6 | 1.97 | 2 | 2 | 3 | 7 |
+| 64 | 2.11 | 2 | 3 | 4 | 6 | 2.16 | 2 | 3 | 4 | 7 |
+| 32 | 2.57 | 3 | 3 | 4 | 7 | 2.40 | 2 | 3 | 4 | 8 |
+| 16 | 2.94 | 3 | 4 | 4 | 7 | 3.07 | 3 | 4 | 5 | 8 |
+| 8 | 3.78 | 4 | 4 | 5 | 8 | 3.87 | 4 | 4 | 6 | 10 |
 
-The p17 accumulation estimate (K/B shift-and-add per output element) assumed about K/B distinct exponents per
-row. This count gives 2.6 per row at block 32 on 1B, against K/B = 64 at K = 2048. The likely reason (inference,
-not checked) is that a block's top tracks the row's weight scale, so few grid values occur. Under that reading the
-shift-add overhead in p17 is much smaller than its K/B estimate. This is a count, not a timing; the cost of a
-per-exponent accumulator in a real kernel is unmeasured.
+Distribution of rows by number of distinct g (fraction of rows; 13 or more: 0 at every block size):
+
+| Block | Model | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9+ |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 1B | 0.373 | 0.606 | 0.019 | 0.001 | 0.00005 | 0 | 0 | 0 | 0 |
+| 256 | 8B | 0.372 | 0.592 | 0.033 | 0.003 | 0.0002 | 0.00001 | 0 | 0 | 0 |
+| 128 | 1B | 0.269 | 0.673 | 0.054 | 0.004 | 0.0002 | 0.00001 | 0 | 0 | 0 |
+| 128 | 8B | 0.111 | 0.814 | 0.068 | 0.006 | 0.0005 | 0.00003 | 0 | 0 | 0 |
+| 64 | 1B | 0.112 | 0.677 | 0.199 | 0.012 | 0.001 | 0.00003 | 0 | 0 | 0 |
+| 64 | 8B | 0.007 | 0.843 | 0.136 | 0.011 | 0.002 | 0.0001 | 0 | 0 | 0 |
+| 32 | 1B | 0.002 | 0.460 | 0.508 | 0.027 | 0.003 | 0.0002 | 0 | 0 | 0 |
+| 32 | 8B | 0 | 0.636 | 0.331 | 0.029 | 0.004 | 0.0003 | 0.00002 | 0 | 0 |
+| 16 | 1B | 0 | 0.211 | 0.652 | 0.127 | 0.009 | 0.001 | 0.00004 | 0 | 0 |
+| 16 | 8B | 0 | 0.060 | 0.828 | 0.100 | 0.011 | 0.002 | 0.0002 | 0.00001 | 0 |
+| 8 | 1B | 0 | 0.0004 | 0.318 | 0.592 | 0.082 | 0.007 | 0.001 | 0.00005 | 0 |
+| 8 | 8B | 0 | 0 | 0.231 | 0.681 | 0.076 | 0.010 | 0.002 | 0.0003 | 0.00007 |
+
+Collapse modulo 8. The exact sum over rows of (distinct g minus distinct (g mod 8)) is 0 for every block size on
+both models, except 8B block 8, where it is 177 over 1.38M rows. Exponents in one row almost never differ by 8 or
+more, so the mod-8 count equals the g count. Distinct (g mod 8) therefore does not reduce the accumulator count
+below what the g count gives.
+
+## Accumulator classes and int32 headroom
+
+Accumulator count per output element = 5 x distinct (g mod 8), since each class carries the 5 limb diagonals.
+Per row, the K positions in one class are the K positions of blocks whose g mod 8 equals that residue. The worst
+class is the largest such count over all rows. Its partial sum is bounded by that count times 3 diagonal products
+per k times 128 x 128, the largest product of two signed int8 limbs. Using the coordinator's form (count x 127 x
+127, no diagonal factor) gives a bound 3x smaller.
+
+| Block | 1B acc mean (p99, max) | 8B acc mean (p99, max) | max K in one class 1B / 8B | int32 headroom 1B / 8B |
+|---|---|---|---|---|
+| 256 | 8.2 (15, 30) | 8.3 (15, 30) | 8192 / 14336 | 5.3x / 3.0x |
+| 128 | 9.0 (15, 30) | 9.8 (15, 35) | 8192 / 14336 | 5.3x / 3.0x |
+| 64 | 10.6 (20, 30) | 10.8 (20, 35) | 8192 / 14016 | 5.3x / 3.1x |
+| 32 | 12.9 (20, 35) | 12.0 (20, 40) | 8000 / 13472 | 5.4x / 3.2x |
+| 16 | 14.7 (20, 35) | 15.3 (25, 40) | 7264 / 12768 | 6.1x / 3.5x |
+| 8 | 18.9 (25, 40) | 19.4 (30, 40) | 6256 / 11336 | 7.1x / 3.9x |
+
+Headroom = 2^31 / (max K in one class x 3 x 16384). The minimum is 3.0x (8B, K = 14336, all K in one class).
+The coordinator's 127 x 127 form gives 9.3x on 8B. No block size or model overflows int32, even in the worst row.
+
+The worst class is the whole K (8192 on 1B, 14336 on 8B), so the bound is set by the largest K, not by the number
+of classes. The number of classes sets how many accumulators a tile holds, not the overflow risk.
+
+## Type and layer depth
+
+Mean distinct g at block 32 by type, all layers:
+
+| Model | q | k | v | o | gate | up | down |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1B | 2.46 | 2.59 | 2.48 | 2.97 | 2.47 | 2.49 | 3.02 |
+| 8B | 2.68 | 2.77 | 2.63 | 2.89 | 2.30 | 2.22 | 2.49 |
+
+Mean distinct g at block 32 by layer depth: 1B ranges 2.42 to 2.75, lowest in the middle layers and highest at
+layers 0 and 15 (2.69 and 2.75). 8B ranges 2.29 to 2.60, highest at layer 0 (2.55) and layer 31 (2.60), with
+layers 1 to 30 between 2.29 and 2.48. Type and depth move the mean by under 1 exponent, with no tail: the maximum
+per row stays at 8 for block 32 on both models.
 
 ## Verdict
 
-Byte-aligned grids do not keep enough of the limb reduction to justify a kernel. At block 32 they give 8.55 products
-on 1B and 8.78 on 8B, against 6.63 and 6.69 for the free grid and 9.00 for the row grid, so they recover about 5%
-of the 9-product cost. The 4-aligned grid recovers about 9% on 1B (8.21) and 16% on 8B (7.55), and it needs one
-extra shift class, which is cheap. Neither reaches the free grid's 6.6, and the 8-aligned grid is not usable at
-row or 256 size without a fourth limb.
+Two questions, answered separately.
 
-The stronger finding is the distinct-exponent count: the free grid needs about 2.6 exponents per row, not K/B,
-so the p17 argument against the direct formulation is weaker than p17 stated. The count is 1B only, and it was
-taken on the free grid, which is the grid the kernel would use. Before writing a kernel, a per-exponent-class
-accumulator should be timed on the free grid. That is a separate study, not this one.
+(a) Byte-aligned and 4-aligned block grids are not worth a kernel. At block 32 they reach 8.55 and 8.21 products on
+1B (free grid 6.63) and 8.78 and 7.55 on 8B (free grid 6.69). Their stated purpose was to avoid extra shift
+classes, but the measured free-grid count is about 2.4 exponents per row, so that purpose is weak. This verdict
+stands regardless of the accumulator result below.
+
+(b) The free grid with per-exponent accumulators is a candidate. Measured: 12 to 13 accumulators per output element
+at block 32 on average (5 x distinct (g mod 8)), p99 20, max 40, and int32 headroom of at least 3.0x in the worst
+row of 8B. This is a count and a bound, not a timing. The remaining unknown is register pressure: a tile of output
+elements that holds 12 to 40 int32 accumulators per element, against 5 today, may not fit the register file at the
+tile shapes a kernel would use. Only a kernel can settle that. The next step is to time a per-exponent-class
+accumulator kernel on the free grid, not to build the byte-aligned variant.
 
 ## What this supports and what it does not
 
-Supports: 8-aligned grids recover little (8.55 products at block 32 on 1B, 8.78 on 8B); 4-aligned grids recover
-more (8.21, 7.55) at one extra shift class; the 1-limb case is impossible for any grid; the free grid's distinct
-exponent count per row is about 2.6 at block 32 on 1B.
+Supports: 8-aligned grids recover little (8.55 products at block 32 on 1B, 8.78 on 8B); 4-aligned grids recover more
+(8.21, 7.55) at one extra shift class; the 1-limb case is impossible for any grid; the free grid needs about 2.4 to
+2.6 distinct exponents per row at block 32, against K/B; the mean varies by about one exponent across type and depth; the int32 bound holds on the free grid for both models.
 
-Does not support: any throughput claim, since these are storage counts and no kernel was written or timed; any
-result for the full 8B model (only layers 0, 15, 31 were run); the distinct-exponent count on 8B; any claim about
-the activation side, whose 3 limbs come from the residual-stream grid.
+Does not support: any throughput claim, since these are storage counts and bounds, and no kernel was written or
+timed; register pressure, which is the open question; any full-model 8B limb result (only layers 0, 15, 31 were run
+for the limb tables; the distinct-exponent counts cover all 32 layers); any claim about the activation side, whose
+3 limbs come from the residual-stream grid.
 
 ## Caveats carried from p17
 
@@ -159,7 +223,10 @@ CPU only, `CUDA_VISIBLE_DEVICES=""`, no GPU. Host `audreymao@10.154.162.141`, in
 - `code/analyze.py --model llama32_1b --model-dir /data41/audreymao/perf_20261030/bf16model --workers 24 --out out`
 - `code/analyze.py --model llama31_8b --model-dir /data08/models/hf-cache/hub/models--NousResearch--Meta-Llama-3.1-8B/snapshots/1f47e50cdbe801ad8a5174156ec3a0655108fb9f --layers 0,15,31 --workers 24 --out out`
 - `code/summarize_grid.py out llama32_1b llama31_8b` (writes `out/*_grid.csv`)
-- `code/distinct_grid.py MODEL_DIR TAG OUT_JSON` (writes `out/distinct_1b.json`)
+- `code/distinct_grid.py MODEL_DIR TAG OUT_JSON` (first pass, block 32 and 16; writes `out/distinct_1b.json`)
+- `code/free_rows.py MODEL_DIR TAG OUT_JSONL` (free grid, all six block sizes, per-row counts and class sizes;
+  `--check` runs the brute-force comparison first)
+- `code/aggregate_rows.py OUT_JSONL OUT_JSON` (percentiles, distributions, accumulator and int32 tables)
 
 Raw JSON-lines and CSVs stay on the host. The scripts in this directory are `analyze.py` (p17 plus aligned
-grids), `check_grid.py`, `summarize_grid.py` and `distinct_grid.py`.
+grids), `check_grid.py`, `summarize_grid.py`, `distinct_grid.py`, `free_rows.py` and `aggregate_rows.py`.
