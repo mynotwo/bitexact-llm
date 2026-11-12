@@ -1,67 +1,82 @@
 # BitExact LLM
 
-**What stays identical when the same model runs under different execution choices?**
+**Run an unmodified bf16 Llama and get the same logits, bit for bit, on any GPU or CPU, at any batch size
+and any KV-cache schedule.**
 
-BitExact is an experimental integer-arithmetic engine for Llama-3.2-1B. It makes
-logits and sampled-token identity explicit across device, batch and KV-cache
-experiments, with recorded constants and execution settings. Its purpose is
-reproducibility; the historical throughput measurements include substantial
-costs relative to stock serving engines.
+BitExact replaces every floating-point reduction in Llama inference with integer arithmetic that cannot
+overflow, so summation order stops mattering. The weights are the original bf16 values, multiplied
+exactly; only activations are carried in fixed point (mean logit difference from HF fp32 about 5e-5,
+against 3e-2 for bf16). The cost is speed, so the useful setting is where agreement is worth more than
+throughput: low-concurrency serving, RL sampler/trainer agreement, replaying a failure, auditing an output
+on different hardware.
 
 Personal research project by Yu (Audrey) Mao.
 [Technical article](https://mynotwo.github.io/blog/bitexact-inference/) ·
 [CPU checks](https://github.com/mynotwo/bitexact-llm/actions/workflows/cpu.yml) ·
-[Reproduction guide](docs/REPRODUCING.md) · [Homepage](https://mynotwo.github.io/)
+[Reproduction guide](docs/REPRODUCING.md) · [Recorded results](docs/RESULTS.md) ·
+[Homepage](https://mynotwo.github.io/)
 
-## Choose the claim you want to check
-
-| Entry | Requirements | What it checks |
-|---|---|---|
-| Arithmetic self-check | CPU, Python 3.11/3.12, declared dependencies; no model weights | Eight production arithmetic fixtures against independent Python references |
-| Model identity report | Your authorized Llama constants, adequate memory and the selected device | Logits hashes and sampled tokens under an explicit experiment contract |
-| Historical model/plugin runs | The recorded hardware, versions and configurations below | Results for those runs, before the current bound guards |
-
-The current source adds arithmetic guards and strict reproduction reports.
-Its CPU checks do not renew the historical model/CUDA results or certify every
-device. Model identity, numerical agreement with a float reference and throughput
-are separate measurements.
-
-## Start without model weights
-
-From a new checkout:
+## Try it in a minute, without model weights
 
 ```bash
-git clone https://github.com/mynotwo/bitexact-llm.git
-cd bitexact-llm
-python -m venv .venv
-. .venv/bin/activate
+git clone https://github.com/mynotwo/bitexact-llm.git && cd bitexact-llm
+python -m venv .venv && . .venv/bin/activate
 python -m pip install -e '.[test]'
-python -m bitexact.repro self-check --out arithmetic.json
+python -m bitexact.repro self-check --out arithmetic.json         # 8 integer-arithmetic fixtures
+python -m bitexact.repro record --synthetic --out synth.json      # whole model, 64 positions
+pytest -q                                                         # includes tests/test_synthetic.py
 ```
 
-Expected: `PASS: 8 arithmetic fixtures`, plus a JSON transcript and fixture hash.
-Choose a new output filename for each run. No GPU, model download or Hugging Face
-account is needed; this is an arithmetic check, not a Llama inference result.
+`--synthetic` runs a small 2-layer Llama whose bf16 weights are assembled bit by bit from PCG64 raw words,
+through the same constants build, forward pass, KV cache and integer sampler as a real checkpoint.
+`tests/test_synthetic.py` pins its logits digests to values recorded on Apple M4 Pro (arm64); CI recomputes
+them on Linux x86_64. Send your `synth.json` to anyone and `python -m bitexact.repro compare` tells you
+whether their machine produced the same 64 logits rows.
 
-For a model report, [build constants and record your device](docs/REPRODUCING.md#2-record-actual-model-identity),
-then compare compatible reports with `python -m bitexact.repro compare`.
-[Share a device report](https://github.com/mynotwo/bitexact-llm/issues/new?template=reproduction.yml)
-with source revision, runtime, report JSON and reference provenance. A reproducible
-mismatch is useful evidence too; do not upload weights, constants or private prompts.
+## What is in the package
 
-## What it is
+| Module | Role |
+|---|---|
+| `bitexact.intops`, `bitexact.sampling` | Integer rules shared by every engine: rounding shifts, floor division, isqrt, limb split/join, first-argmax, integer Gumbel-max keyed by (seed, token index) |
+| `bitexact.exact` | **The engine.** Original bf16 weights split into int8 limbs plus a sparse residual (bit-for-bit), int64 fixed-point activations, exact GEMMs on Triton, cuBLAS `_int_mm` or CPU float64 |
+| `bitexact.repro` | Identity reports: `self-check`, `record` (also checks incremental vs. batched full forward), `compare` |
+| `bitexact.synthetic` | Platform-independent synthetic checkpoint for weight-free whole-model checks |
+| `bitexact.vllm_plugin` | The integer engines inside vLLM 0.32.0 (paged KV, prefix cache, CUDA graphs; exact and int8 modes) |
+| `bitexact.int8` | A quantized variant with int8 weights. Faster, but it is a different model (logit error about 3x bf16's), not the bf16 model made reproducible |
 
-`bitexact` runs Llama-3.2-1B in two integer modes:
+## Use it with your own checkpoint
 
-- **exact** (`bitexact.exact`): the original bf16 weights, unchanged, multiplied exactly with int64
-  fixed-point activations. Historical runs below report a 5e-5 mean logit difference from HF fp32 (bf16: 3e-2).
-- **int8** (`bitexact.int8`): int8 weights, a quantized integer model. It is faster than exact at batch 1
-  and in prefill in the historical runs; reported logit differences from fp32 are about 9e-2, about 3x bf16's error.
+Model weights are not included (Llama 3.2 Community License). Build the integer constants once on a CPU;
+their SHA-256 identifies the integer model:
 
-Both share the integer rules, the attention kernel and the sampler. An optional vLLM plugin
-(`bitexact.vllm_plugin`) serves the int8 mode through vLLM's scheduler, paged KV cache and prefix cache
-(see "vLLM plugin" below).
-For comparison, `bitexact.det_float` is a float bf16 engine made batch-invariant with fixed Triton tiles.
+```bash
+pip install -e ".[triton]"     # CUDA kernels; ".[vllm]" for the plugin
+python examples/build_constants.py --model PATH/Llama-3.2-1B --mode exact --out exact_const.pt
+python examples/generate.py --const exact_const.pt --tokenizer PATH/Llama-3.2-1B \
+    --prompt "The lighthouse keeper wrote" --max-new 64 --temperature 0.7 --seed 1
+```
+
+```python
+from bitexact import generate, load
+model = load("exact_const.pt", "cuda")          # or "cpu"; gemm="cublas", compiled=True are options
+tokens, hashes = generate(model, prompt_ids, max_new=64, tn=7, td=10, seed=1)   # T = 7/10
+```
+
+Check identity across machines (record on each, then compare; exit code 1 means some row differs):
+
+```bash
+python -m bitexact.repro record --const exact_const.pt --device cuda:0 --out gpu.json
+python -m bitexact.repro record --const exact_const.pt --device cpu --out cpu.json
+python -m bitexact.repro compare gpu.json cpu.json
+```
+
+Serving through vLLM (`make_model_dir` writes a model directory vLLM loads with the plugin):
+
+```bash
+python -m bitexact.vllm_plugin.make_model_dir --hf PATH/Llama-3.2-1B --const exact_const.pt --out intmodel
+python examples/vllm_offline.py --model intmodel --out run1
+GPUS="1 2 3" MODEL=intmodel CONST=exact_const.pt bash tests/vllm/run_tests.sh TAG    # invariance suite
+```
 
 ## Why integers make results order-independent
 
@@ -101,492 +116,34 @@ Bounds (|x| < 2^40, KV values within 3 limbs, products < 2^62, ...) are checked 
 outputs are now checked before residual addition; final logits are checked too. The linear epilogue
 also flags left-shift bit loss and rejects unsupported positive shifts above 30 for nonzero inputs.
 These guards retain the preceding GEMM and residual-accumulation input contracts; they are not a proof
-that every arithmetic operation is overflow-free. The historical model runs below predate these guards;
+that every arithmetic operation is overflow-free. The recorded model runs in `docs/RESULTS.md` predate these guards;
 the added CPU regressions do not re-establish whole-model or CUDA identity for the changed source.
 
-## Evidence and its scope
+## What is and is not established
 
-- Historical runs with the same constants file (identified by its SHA-256) produced identical int64
-  logits and sampled tokens across the configurations listed below. Those runs predate the new bound
-  guards; the changed source still needs a fresh model/CUDA reproduction. They do not prove all hardware.
-- exact mode uses the original bf16 weights for every linear layer, including the tied lm_head (checked
-  bit for bit over all 1,235,746,816 elements). **The one exception is the input embedding**: it is stored
-  at the residual stream's fixed point (int32, unit 2^-24), so each entry is rounded once to 2^-24.
-  50,498 of 262,668,288 entries (0.019%) change, each by at most 2^-25 (about 3e-8).
-- The result is still an approximation of the real-valued model (22-bit activations and attention
-  weights). It is reproducible, not identical to fp32.
-
-## Install
-
-```
-pip install -e .              # CPU path (torch, numpy, safetensors, transformers)
-pip install -e ".[triton]"    # CUDA: Triton GEMM and attention kernels
-pip install -e ".[vllm]"      # vLLM plugin (tested with vLLM 0.32.0)
-```
-
-Model weights are not included. Download Llama-3.2-1B in Hugging Face format (one `model.safetensors`);
-the weights are under Meta's Llama 3.2 Community License.
-
-## Usage
-
-Build the integer constants once (CPU, float64). The constants hold every weight and table as integers,
-and their SHA-256 identifies the integer model:
-
-```
-python examples/build_constants.py --model PATH/Llama-3.2-1B --mode exact --out exact_const.pt
-python examples/build_constants.py --model PATH/Llama-3.2-1B --mode int8 --out int8_const.pt
-```
-
-Generate:
-
-```
-python examples/generate.py --const exact_const.pt --tokenizer PATH/Llama-3.2-1B \
-    --prompt "The lighthouse keeper wrote" --max-new 64 --temperature 0.7 --seed 1
-```
-
-From Python:
-
-```python
-import torch
-from bitexact import generate, load
-
-model = load("exact_const.pt", "cuda")          # or "cpu"; gemm="cublas", compiled=True are options
-tokens, hashes = generate(model, prompt_ids, max_new=64, tn=7, td=10, seed=1)   # T = 7/10
-```
-
-Check bit identity across devices (record on each machine, then compare):
-
-```
-python examples/check_bit_identity.py record --const exact_const.pt --device cuda:0 --out h800.json
-python examples/check_bit_identity.py record --const exact_const.pt --device cpu --out cpu.json
-python examples/check_bit_identity.py compare h800.json cpu.json
-```
-
-vLLM (int8 mode):
-
-```
-python -m bitexact.vllm_plugin.make_model_dir --hf PATH/Llama-3.2-1B --const int8_const.pt --out intmodel
-python examples/vllm_offline.py --model intmodel --out run1
-```
-
-The invariance suite and the throughput script are in `tests/vllm/`:
-
-```
-GPUS="1 2 3" MODEL=intmodel CONST=int8_const.pt bash tests/vllm/run_tests.sh TAG
-GPU=3 BF16_MODEL=PATH/Llama-3.2-1B MODEL=intmodel bash tests/vllm/bench_seq.sh
-```
+- Recorded runs ([docs/RESULTS.md](docs/RESULTS.md)) produced identical int64 logits and sampled tokens for
+  Llama-3.2-1B and Llama-3.1-8B across H800, H100, L20, x86 CPU and Apple M4 Pro, batch 1/4/8, incremental
+  KV cache, compiled and cuBLAS paths, and inside vLLM under mixed batches, chunked prefill, prefix caching
+  and preemption. Those runs predate the current bound guards; a fresh GPU run on the current source is
+  still owed.
+- Every CPU CI run re-establishes the synthetic-model goldens on Linux x86_64 against arm64.
+- Exact mode uses the original bf16 weights for every linear layer, including the tied lm_head. The one
+  exception is the input embedding, stored at the residual fixed point (unit 2^-24): 0.019% of
+  Llama-3.2-1B's entries change, each by at most 2^-25.
+- The result approximates the real-valued model (22-bit activations and attention weights). It is
+  reproducible, not identical to fp32.
+- Speed: exact mode in vLLM reaches about 0.42x stock vLLM bf16 at batch 1 and 1.19x vLLM's own
+  batch-invariant mode there; the gap widens with batch size (see RESULTS.md, "Speed").
 
 ## Tests
 
+```bash
+pytest -q                                   # CPU: arithmetic oracles, repro CLI, synthetic whole model
+BITEXACT_EXACT_CONST=exact_const.pt BITEXACT_INT8_CONST=int8_const.pt pytest -q -m slow   # real constants
 ```
-pytest -q                                    # CPU unit tests; GPU tests run when CUDA is present
-BITEXACT_EXACT_CONST=exact_const.pt BITEXACT_INT8_CONST=int8_const.pt pytest -q -m slow
-BITEXACT_INT8_CONST=int8_const.pt pytest -q tests/vllm/test_decode_paths.py   # plugin decode paths, CUDA
-```
 
-The unit tests compare each primitive with Python big-integer and `Fraction` references (division,
-rounding shifts, two-word combine, quantization, the linear layer with residual against the exact rational
-sum over the bf16 weights, all three GEMM paths). The `slow` tests check that one engine gives the same
-logits alone, in a padded batch, through the KV cache, with compiled stages, with cuBLAS and on the CPU.
-Without constants files they can build a 2-layer model from `BITEXACT_MODEL=PATH/Llama-3.2-1B`.
-
-## Historical model results (exact mode, before the new guards)
-
-<details>
-<summary>Recorded identity, accuracy, throughput and plugin experiments</summary>
-
-### Bit identity
-
-Exact mode, Llama-3.2-1B, positions are generated tokens; each position compares the SHA-256 of the full
-int64 logits row and the token sampled with integer Gumbel-max at T = 0.7.
-
-Main run: all 3,696 generated positions of 16 samples; reference H800 (card 4), batch 1, one full forward.
-
-| Setting | Device / software | Positions | Logits differ | Tokens differ |
-|---|---|---|---|---|
-| batch 1, full forward | H800, torch 2.4.1, Triton 3.0 | 3,696 | 0 | 0 |
-| batch 8 (right padding), full forward | same card | 3,696 | 0 | 0 |
-| prefill + token-by-token KV cache | same card | 3,696 | 0 | 0 |
-| same, torch.compile fused stages | same card | 3,696 | 0 | 0 |
-| batch 8, cuBLAS `_int_mm` path | same card | 3,696 | 0 | 0 |
-| the 5 settings above | another H800 | 3,696 x 5 | 0 | 0 |
-| batch 1, batch 8, incremental, incremental + compile | H100, torch 2.6.0, Triton 3.2 | 3,696 x 4 | 0 | 0 |
-| batch 1, full forward | x86 CPU (Xeon 8457C, float64 GEMM) | 3,696 | 0 | 0 |
-| batch 8, after changing GEMM tiles and the division implementation | H800 | 3,696 x 2 | 0 | 0 |
-| batch 1, full forward, 8 threads and 1 thread | Apple M4 Pro (arm64, Apple Accelerate BLAS), torch 2.14.1, CPU path | 3,696 x 2 | 0 | 0 |
-
-The Apple M4 Pro runs match both the H800 and the x86 CPU references. Their constants were built on x86
-and only loaded on ARM, so table generation on ARM was not tested.
-
-An independent re-check on 4 new prompts (narrative, code, history, recipe; 13-17 tokens each) generated
-128 tokens per prompt through the KV cache with T = 0.7 sampling, so any differing bit would also change the
-continuation. Each run also recomputed the same positions in one right-padded batch of 4. Reference: H800,
-incremental.
-
-| Run | Environment | Incremental: positions / logits differ / tokens differ | Batch of 4 |
-|---|---|---|---|
-| H800 Triton | torch 2.4.1, Triton 3.0 | 512 / 0 / 0 | 512 / 0 / 0 |
-| H800 Triton, another card | same | 512 / 0 / 0 | 512 / 0 / 0 |
-| H800 torch.compile | same | 512 / 0 / 0 | 512 / 0 / 0 |
-| H800 cuBLAS `_int_mm` | same | 512 / 0 / 0 | 512 / 0 / 0 |
-| H100 Triton | torch 2.6.0, Triton 3.2 | 512 / 0 / 0 | 512 / 0 / 0 |
-| H100 torch.compile | same | 512 / 0 / 0 | 512 / 0 / 0 |
-| NVIDIA L20, Triton | torch 2.4.1+cu124, Triton 3.0, driver 535.261.03, CUDA 12.4 | 512 / 0 / 0 | — |
-| x86 CPU (float64 limb GEMM) | x86_64 | 512 / 0 / 0 | 512 / 0 / 0 |
-
-Constants files built from the same safetensors on two machines (torch 2.4 and torch 2.6) have the same
-SHA-256.
-
-Llama-3.1-8B in exact mode (hidden size 4096, head dim 128; one constants file, internal SHA-256
-`2f02ac8e…`, rebuilt and checked on every host): 8 texts, first 128 generated positions each (595 positions),
-teacher forcing in batch 1, batch 8 and incremental modes, compared against H800 batch 1 on the full int64
-logits row, the greedy token and the T = 0.7 sampled token. Details in `experiments/xhw_8b/RESULTS.md`.
-
-| Run | Environment | Positions per mode | Logits / tokens differ |
-|---|---|---|---|
-| H800 Triton, cuBLAS `_int_mm`, torch.compile | torch 2.4.1, Triton 3.0 | 595 | 0 / 0 |
-| H100 Triton, torch.compile | torch 2.6.0, Triton 3.2 | 595 | 0 / 0 |
-| x86 CPU (float64 limb GEMM), two hosts | torch 2.4.1 and 2.6.0 | 595 (incremental on one host: 113) | 0 / 0 |
-| Apple M4 Pro CPU | torch 2.15.0 | 595 (incremental: 198) | 0 / 0 |
-| NVIDIA L20 (sm_89), Triton | torch 2.4.1, Triton 3.0 | 595 | 0 / 0 |
-
-Not supported: V100 (sm70). The constants build gives the same SHA-256, but Triton 3.0 cannot compile the
-kernels for sm70 (`PassManager::run failed` in make_ttgir), so no logits were compared.
-
-### Accuracy
-
-Teacher forcing on generated positions: 100 texts generated by an 8B model at each of three temperatures
-(T0, T0.7, T1.0; 95,444 positions), plus 2,044 positions of enwik8 text (4 segments of 512 tokens).
-Reference: HF fp32 with TF32 off. KL and cross-entropy in bits/token.
-
-| Data | Model | Mean \|Δlogit\| | Max \|Δlogit\| | Top-1 agree | KL(fp32 ‖ ·) | Cross-entropy |
-|---|---|---|---|---|---|---|
-| T0 | exact | 5.4e-5 | 0.0018 | 100% | 3.7e-10 | 0.4869 |
-| T0 | HF bf16 | 3.0e-2 | 1.05 | 99.45% | 2.6e-4 | 0.4876 |
-| T0 | int8 | 9.1e-2 | 2.30 | 99.33% | 9.1e-4 | 0.4882 |
-| T0.7 | exact | 5.2e-5 | 0.0017 | 100% | 7.0e-10 | 1.3473 |
-| T0.7 | HF bf16 | 2.9e-2 | 0.74 | 98.57% | 5.4e-4 | 1.3482 |
-| T0.7 | int8 | 8.8e-2 | 2.54 | 98.48% | 1.8e-3 | 1.3498 |
-| T1.0 | exact | 4.5e-5 | 0.0023 | 100% | 1.0e-9 | 3.8581 |
-| T1.0 | HF bf16 | 2.6e-2 | 1.20 | 97.52% | 7.8e-4 | 3.8585 |
-| T1.0 | int8 | 7.6e-2 | 2.39 | 97.59% | 2.4e-3 | 3.8602 |
-| text | exact | 5.9e-5 | 0.0020 | 100% | 1.6e-9 | 3.2194 |
-| text | HF bf16 | 2.9e-2 | 0.87 | 98.39% | 7.8e-4 | 3.2190 |
-| text | int8 | 8.7e-2 | 2.05 | 97.75% | 3.2e-3 | 3.2239 |
-
-HF fp32's own cross-entropy is 0.4869 / 1.3473 / 3.8581 / 3.2194; exact matches it to < 1e-4 on all four.
-Against HF fp64, exact's mean difference is 4.7e-5 to 5.9e-5 (fp32: 3.7e-6 to 5.1e-6; bf16: 2.7e-2 to
-2.9e-2), with 100% top-1 agreement. The error is about 10x fp32's and about 1/500 of bf16's, mostly from
-the 22-bit activations and attention weights.
-
-An independent check on 2 new texts (358 positions, full vocabulary): exact vs fp32 5.0e-5 mean, 7.9e-4 max,
-100% top-1; bf16 vs fp32 2.9e-2 mean, 0.42 max, 97.5% top-1.
-
-### Speed
-
-The value of this project is reproducibility, not throughput. Stock vLLM bf16 (CUDA graphs) decodes 2.5 to
-6x faster than the exact engine at batch 8 and above, and prefills about 20x faster. The exact engine is
-about as fast as vLLM's batch-invariant mode at batch 8 (1.18x) and slower at batch 1 (0.64x) and at large
-batch (0.18x at batch 100).
-
-One H800; 128 input tokens, 128 output tokens; prefill is 8 x 512 tokens. exact and int8 run each decode
-step as one CUDA graph with fixed length S = P + N (no paging), median of 3. vLLM runs are vLLM's default
-torch.compile + CUDA graphs; BI is `VLLM_BATCH_INVARIANT=1`; its decode-only rate is estimated as
-`B * 127 / (t_out128 - t_out1)`, and end-to-end throughput including prefill is in parentheses. Other jobs
-were running on the machine (load average 30 to 99) and each vLLM configuration was run once, so absolute
-numbers are lower than on an idle machine; comparisons within the table are more reliable.
-
-| Batch | vLLM bf16 decode | vLLM bf16 BI decode | exact decode | int8 decode |
-|---|---|---|---|---|
-| 1 | 638 (e2e 602) | 209 (e2e 205) | 133 | 328 |
-| 8 | 5,157 (e2e 4,483) | 1,746 (e2e 1,682) | 2,062 | 1,642 |
-| 32 | 16,724 (e2e 15,237) | invalid run (e2e 7,155) | 4,265 | 2,907 |
-| 100 | 28,733 (e2e 26,685) | 26,403 (e2e 24,744) | 4,745 | 3,495 |
-
-8 x 512 prefill, prompt tokens/s: vLLM bf16 186,182; vLLM BI 124,121; exact 9,431; int8 20,579.
-
-Earlier measurements against HF transformers bf16 *eager* (DynamicCache, no CUDA graphs, no torch.compile)
-on an idle H800 gave exact 253 / 1,947 / 6,402 tok/s decode at batch 1 / 8 / 100 versus HF 123 / 953 /
-10,671. The 2x lead at small batch only holds against that eager baseline, whose per-step time is dominated
-by kernel launches.
-
-### vLLM plugin (int8 mode)
-
-The plugin (`src/bitexact/vllm_plugin/`) runs the int8 engine inside vLLM 0.32.0 with vLLM's scheduler, block
-manager, slot mapping and prefix cache.
-
-What it does:
-
-- **Paged integer attention.** The KV cache is vLLM's own bf16 cache, read as int32 (one K and one V limb block
-  per KV head). Two Triton kernels read K and V in place through the block table; nothing is gathered into a
-  copy and no score matrix is written to memory. Each kernel call is split into key ranges that combine with
-  int64 atomic adds and max, so the split count does not change any bit.
-- **Long context.** `max_model_len` is 32,768. At load time the integer RoPE table is rebuilt to that length
-  with the same formula as the constants file, and the first rows are checked bit for bit against it. Tested
-  invariance runs go up to 14,000 tokens; longer contexts run but were not part of the invariance tests.
-- **Weight table.** The attention weight table is computed once when the model loads, not during a forward
-  pass or graph capture.
-- **Compile split.** The integer element-wise work before and after attention (norm, quantization, RoPE, the
-  int8 GEMMs and their epilogue, SiLU) runs as two torch.compile regions per layer (`BITEXACT_COMPILE_LAYER=1`,
-  the default). The KV-cache write and the attention kernel stay outside torch.compile. A version that compiled
-  the whole layer including the KV write lost the written K/V and gave logits different from the engine.
-- **Decode graphs.** Uniform decode batches run as CUDA graphs: vLLM's own (default, `enforce_eager=False`) or
-  the plugin's (`enforce_eager=True`, `BITEXACT_GRAPHS=1`). Both are covered by the invariance suite.
-- **Sampling.** Greedy or temperature sampling with integer Gumbel noise keyed by (seed, token index); the
-  token is chosen from the exact integer logits.
-
-Invariance (vLLM 0.32.0, H800; `tests/vllm/run_tests.sh`, 14 runs). The reference is the integer engine run
-without vLLM, one request at a time. Short targets: 12 prompts of 7 to 700 tokens (6 share a 320-token
-prefix), T = 0 / 0.7 / 1.0, 48 tokens each, 576 positions. Long targets: 5,000, 9,000 and 14,000 tokens, 16
-tokens each, 48 positions.
-
-| Runs | Positions | Token sequences differing | Logits hashes differing |
-|---|---|---|---|
-| 10 short-target runs: alone, busy mixed batches with 40 fillers (chunked prefill budgets 64 / 256 / 512, prefix cache on and off, 160-block KV cache with 5 preemptions, full eager with max_num_seqs 128, vLLM graphs) | 576 each | 0 | 0 |
-| 4 long-target runs (alone, busy with prefix cache, busy eager without prefix cache, vLLM graphs) | 48 each | 0 | 0 |
-
-The integer reference used here is byte-identical to the reference of the earlier H800 verification (the
-short and long logits-hash files match).
-
-Throughput on one H800 (GPU empty before the run; 128 input and 128 output tokens per request, `max_num_seqs`
-= batch; the second of two identical generate calls is timed, so it includes prefill; `tests/vllm/bench.py`):
-
-| Configuration (output tok/s, T = 0) | Batch 1 | Batch 32 | Batch 128 |
-|---|---|---|---|
-| vLLM bf16, CUDA graphs (stock) | 612 | 16,128 | 33,831 |
-| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 214 | 7,549 | 34,487 |
-| integer plugin before the changes below | 235 | 4,414 | 9,341 |
-| integer plugin after the four changes below | 388 | 9,570 | 23,978 |
-| integer plugin after three further changes (later session) | 446 | 10,988 | 27,176 |
-| integer plugin after five more changes (third session) | 529 | 13,330 | 29,569 |
-| integer plugin, current | 548 | 14,640 | 33,463 |
-
-The `current` row and the two vLLM rows are the median of five runs per cell in one session on one GPU, cycling
-exact / int8 / bf16 / batch-invariant; the four earlier plugin rows come from three earlier sessions and are kept
-for the speedup history. So the plugin is 2.6x / 1.9x batch-invariant vLLM at batch 1 / 32, 97% of it at batch 128,
-and 99% of stock vLLM at batch 128. Runs of one configuration spread by at most 2.7% at batch 32 and 128, and by at
-most 6.9% at batch 1, where a step is a few milliseconds. vLLM's batch-invariant mode is the fair deterministic
-baseline, but only with `TRITON_ATTN`: with the default FlashAttention backend its logits for a prompt run alone
-differed from the same prompt inside batches of 32 and 128 at 104 and 197 of 512 positions. It guarantees batch
-invariance on one GPU and software stack, not agreement across GPU types or CPUs.
-
-The five-more-changes session measured T = 1 at 510 / 12,224 / 28,688 tok/s (previous plugin 447 / 10,087 /
-20,319), so most of the T = 1 host overhead was gone by then.
-
-Four changes, all verified bit-identical (14/14 suite runs with 0 differing tokens or logits hashes, hash
-files byte-equal to the previous commit), raised plugin throughput 1.65x / 2.17x / 2.57x:
-
-- The sampler and logits path no longer synchronize the host with the GPU. GPU idle time per decode step
-  fell from 3.84 to 0.69 ms at batch 128. The overflow flag is read when each step's output is returned,
-  so an overflow in any step, including the last, still raises.
-- Integer elementwise work around the GEMMs got cheaper: the post-GEMM range check is proven at load time
-  instead of checked at run time, and quantize division uses a float32 estimate with an exact integer
-  correction. Elementwise time per step fell from 4.96 to 1.81 ms at batch 128.
-- Decode attention stacks the three int8 limbs of up to four queries per KV head as the 16 rows of one
-  tensor-core operand, so q.K and p.V take 3 int8 dots per tile instead of 9, and an unsplit call runs as a
-  single kernel without atomics. Attention
-  kernel time per step fell from 1.67 to 1.30 ms at batch 128; the long-context decode step at batch 8 fell
-  from 11.82 to 7.72 ms.
-- The MLP's SiLU and requantization between its two GEMMs, and the logits float copy with greedy argmax,
-  run as Triton kernels computing the same integers. Logits and sampling time per step fell from 0.93 to
-  0.57 ms at batch 128.
-
-Three further changes, verified the same way (14/14 suite runs, hash files byte-equal to the previous commit, and
-token dumps from the production path identical at mixed temperatures, at T = 0, and with logprobs), cut GPU kernel time per
-decode step from 4.58 to 3.48 ms at batch 128:
-
-- The KV cache stores each value as three int8 limb planes instead of an int32 that attention re-split on
-  every read, 25% fewer bytes per key. Decode attention fell from 1.26 to 0.70 ms per step at batch 128.
-- Decode GEMMs with up to 256 rows run in a Triton int8 kernel with tile sizes chosen offline per shape
-  (int32 sums are exact, so the choice does not change any integer). The LM head stays on `torch._int_mm`,
-  which was faster there.
-- One Triton pass over the LM-head output finishes the integer logits, takes the greedy argmax and, at
-  T > 0, draws the integer Gumbel noise, without storing int64 logits. Requests that need float logits
-  (logprobs, penalties, logit bias, structured output) keep the previous path. Logits and sampling fell
-  from 0.58 to 0.41 ms per step at T = 0 and from 1.36 to 0.76 ms at T = 1.
-
-Five more changes, verified the same way (14/14 suite runs with hash files byte-equal to the previous commit, token
-dumps identical) plus the 8B and speculative-decoding checks below:
-
-- Per-request sampler seeds and step counters are built on the GPU from vectorised per-slot arrays, not in a
-  Python loop per request. Step time not spent in GPU kernels at batch 128, T = 1 fell from 2.14 to 0.31 ms.
-- RMSNorm with the residual add, the QKV split with RoPE, and the attention output requantization run as three
-  fused Triton kernels (1B and 8B geometries; `BITEXACT_FUSE=0` turns them off). Kernels per decode step fell from 486
-  to 206.
-- Long-context split-KV attention uses 64-key tiles and a new split-count rule. Decode at S = 16,384 fell from
-  2.38 to 1.97 ms per step at batch 1 and from 6.58 to 5.21 ms at batch 8; at S = 32,768 from 2.96 to 2.45 and
-  from 10.90 to 8.86 ms.
-- Llama-3.1-8B runs in the plugin (int8 mode, dimensions and Llama-3.1 RoPE scaling read from the config,
-  head-dim-128 score scale with load-time bounds at most 2^33.1 against a 2^38 limit). It matches the standalone
-  int8 `IntLlama` 8B reference in every token and logits hash over 7 suite runs, and is batch invariant at
-  batch 1 / 32 / 128 with graphs and eager.
-- vLLM's `ngram` speculative decoding works with the plugin and does not change any token: each draft row is
-  sampled with its own position's seed and step, so a draft is accepted only when it equals the token plain
-  decoding produces there. With 4 draft tokens it gives 1.6x to 1.9x at batch 1 and is slower at batch 32
-  (0.4x to 0.9x), and 0.4x to 1.0x at batch 32 and 128 in a later run (2 draft tokens are better than 4 but still
-  not faster than none), so it is off unless the user sets `speculative_config`.
-
-Three later lanes moved the `current` row of the first table:
-
-- The LM head, final norm and greedy pass now run inside the decode CUDA graph, with a device gate that makes the
-  pass free for the steps that do not need it (`experiments/perf/p6_graphlogits/RESULTS.md`). 1B went from
-  13,873 to 15,928 tok/s at batch 32 (T = 0) and 30,104 to 33,285 at batch 128 (1.15x and 1.11x). With its
-  opt-in self-check on (`BITEXACT_GL_CHECK=1`), which recomputes norm, LM-head GEMM and greedy pass from the hidden
-  states and asserts `torch.equal` on all three at every graph replay, 254 checks ran per run at batch 1 / 32 / 128
-  and T = 0 / 1, 254 of 254 with the gate on in the T = 0 runs and with the gate off in the T = 1 ones, and none
-  fired.
-- An sm90 wgmma + TMA int8 GEMM with a per-shape dispatch table, described under 8B below.
-- The exact-mode fused elementwise kernels and the greedy-logits fix, described in the exact-mode section below.
-
-The `current` row is a later session than the 529 / 13,330 / 29,569 row above, so the difference between them
-(+3.6% / +9.8% / +13.2%) mixes those changes with session-to-session drift and is not an A/B. Read each lane's own
-run-paired ratio, not its absolute level: the graphlogits session, for instance, read 13,873 at batch 32 where this
-gives 14,640.
-
-8B throughput, one H800 (128 in / 128 out, T = 0, tok/s). The `current` row and the two vLLM rows are the median
-of five runs per cell in one session, cycling exact / int8 / bf16 / batch-invariant (the exact row is quoted in prose
-in the exact-mode section below); the `before` row is the base those two changes were measured against, in their own
-session:
-
-| Configuration | Batch 1 | Batch 32 | Batch 128 |
-|---|---|---|---|
-| vLLM bf16, CUDA graphs (stock) | 152 | 4,533 | 14,064 |
-| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 50 | 1,745 | 10,675 |
-| integer plugin, Llama-3.1-8B, before the two changes below | 153 | 4,028 | 8,266 |
-| integer plugin, Llama-3.1-8B, current | 180 | 4,978 | 10,781 |
-
-Two later changes, verified bit-identical (1B suite hash files byte-equal to the previous commit; 8B equal to the
-`IntLlama` reference in every token and logits hash; 8B batch invariant with graphs and eager), sped up 8B by
-1.14x / 1.19x / 1.20x (also at T = 1) and left 1B unchanged:
-
-- The fused decode kernels take the model dimensions as kernel parameters, so 8B uses them too. Kernels per
-  8B decode step fell from 937 to 388 and elementwise time from 2.54 to 0.75 ms at batch 128.
-- The Triton GEMM tile table now covers the 8B shapes, with cutlass kept where it is faster (the gate/up
-  projection at 256 rows, and the LM head except at 65 to 128 rows). GEMM time per 8B step at batch 128 fell from
-  6.48 to 5.55 ms.
-
-A later lane replaced the int8 GEMM with an sm90 wgmma + TMA kernel and a per-shape dispatch table
-(`experiments/perf/p6_wgmma/RESULTS.md`). Its own A/B is 8B decode kernel time 11.03 -> 10.39 ms at batch 128
-(5.8%), which is 10,303.5 -> 10,776.5 tok/s end to end there; 8B batch 1 and 32 stayed flat (180.3 vs 179.9 and
-4,959.8 vs 4,989.0), and 1B prefill rose 6.2% / 6.0% / 8.5% at 64 x 256 / 512 / 1024. The rest of the gap between
-the 175 / 4,811 / 9,933 those two changes measured and the current row is session drift: the wgmma A/B session
-already read 180 / 4,960 / 10,304 for the same tree as `before`. Two cells are slower in the microbench and were
-left that way: `gu1` at 8,192 rows (0.71x) and `gu8` at 256 rows (0.63x). The same lane costs one 1B batch-32 run
-about 27 ms once, on the first call inside the prefix-caching path (steady state within 1.4% of base).
-
-At batch 128, the 8B decode step of both trees in the same profiled protocol (prefix caching off, profiler on, GPU 2)
-goes from 11.75 to 11.27 ms, kernel time 11.23 to 10.46 ms over the same 388 kernels per step. The GEMM is the
-change: all 33 calls per step take 3.32 ms of cutlass s8 on `base` and 2.74 ms of `_wgmma` on the merged tree (18%),
-and the LM-head GEMM moves with them, out of the `sampling_logits` bucket (0.54 to 0.11) into `gemm_bf16`, because
-it now runs inside the graph. Attention 2.72 to 2.65 ms, elementwise 0.78 to 0.77. The plugin is now 1.2x and 1.1x
-stock vLLM at batch 1 and 32, reaches 77% of it at batch 128, and is level with batch-invariant vLLM at batch 128
-(10,781 against 10,675 tok/s).
-
-8B long-context decode at S = 16,384 takes 7.11 ms per step at batch 1 and 19.47 ms at batch 8, both from
-`experiments/perf/p4_merge/RESULTS.md`, the session before the three lanes above (each of their A/Bs is at the batch
-sizes in this section).
-
-Measurements, profiles and scripts are in `experiments/perf/` (`p2_merge`, `p3_merge`, `p4_merge`, `p6_wgmma`,
-`p6_graphlogits`, `p8_exactfuse` and `p9_merge` RESULTS.md for the combined runs).
-
-Long-context decode, one H800, plugin graph replay, S = 16,384 (`tests/vllm/longctx_step.py`, CUDA event median):
-
-| Batch | Decode ms per step | Prefill of a 512-token chunk at S = 16,384 (before the five changes) |
-|---|---|---|
-| 1 | 1.97 | 75 ms |
-| 8 | 5.21 | 75 ms |
-
-Exact mode in the plugin. The plugin also serves exact mode (the original bf16 weights, bit for bit) when given
-exact-mode constants. Its output equals the standalone exact engine in every token and int64 logits hash on the
-14-run suite (1B) and on 192 rows at batch 1 / 32 / 128 (8B). Each linear runs as one Triton kernel that does the
-9 limb products with int32 accumulators, joins them in int64 and adds the sparse residual. The elementwise work now
-runs as fused Triton kernels (227 kernels per prefill step instead of 642, 218 per decode step instead of 633). 1B,
-128 in / 128 out, T = 0, tok/s, median of five runs on one H800, cycling exact / int8 / bf16 / batch-invariant in
-one session:
-
-| Configuration | Batch 1 | Batch 32 | Batch 128 |
-|---|---|---|---|
-| vLLM bf16, CUDA graphs (stock) | 609 | 15,920 | 33,387 |
-| vLLM bf16, `VLLM_BATCH_INVARIANT=1`, `TRITON_ATTN` | 215 | 7,583 | 34,560 |
-| integer plugin, exact mode (original bf16 weights) | 255 | 7,132 | 14,453 |
-| integer plugin, int8 mode (quantized weights) | 552 | 14,472 | 33,252 |
-| standalone exact engine (earlier session) | 223 | 3,321 | 5,615 |
-
-So serving the unmodified float model bit-exactly costs about 2.4x against stock vLLM: it is 1.19x batch-invariant
-vLLM at batch 1 and reaches 94% and 42% of it at batch 32 and 128. The exact row is the n = 5 median of
-`experiments/perf/p15_route1b`, which measured the pre-routing exact engine at 255 / 6,951 / 14,208 in that same
-session; the other rows are the `experiments/perf/p14_verify` session. A profiled batch-128 decode step (prefix caching
-off, as the profiler runs it, which costs `bench.py` a third of its throughput on this model) takes 8.4 ms against
-10.9, its kernel time 8.1 against 10.5: linears 4.9, sampling and LM head 1.2, elementwise 1.0, attention 0.7,
-the rest 0.2. The elementwise bucket is the one that moved (3.55 to 1.04 ms). Routing the 1B shapes to the stacked GEMM where it
-wins splits the 4.73 ms linear bucket into 2.65 ms fused, 1.49 ms wgmma and 0.26 ms epilogue, 4.40 ms in all, for
-0.23 ms less decode kernel time per step and the batch 32 / 128 gains above; batch 1 and prefill are unchanged
-(`experiments/perf/p15_route1b`). The prefill of the 128 x 128 batch
-moved with it: its GPU kernel time fell from 957 to 667 ms and its host enqueue from 28.2 to 12.1 ms, over the same
-642 -> 227 kernels. The throughput numbers in the sections above are for int8 mode, a quantized model. 8B exact
-mode gives 81 / 2,001 / 3,773 tok/s (int8 mode 180 / 5,002 / 10,775; vLLM bf16 152 / 4,505 / 14,054; vLLM
-batch-invariant 50 / 1,751 / 10,677; same session, n = 5 medians): 1.64x batch-invariant vLLM at batch 1, 1.14x at
-batch 32 and 35% of it at batch 128, and 3.4x over the 1,124 tok/s batch 128 measured before the fused elementwise
-kernels and the 8B GEMM work. The 8B gain over the previous README (66 / 1,363 / 3,088) comes from the 8B-only
-exact GEMM tuning, stacked limb GEMM, SiLU product reuse and integer reciprocals (`experiments/perf/p10_exact_gemm`,
-`p11_p13_exact`); for 1B exact only the p10
-configuration tuning applies (+0% / +2.2% / +1.9% in the same run).
-
-Plugin limitations:
-
-- Single GPU only (TP = 1, PP = 1). Speculative decoding tested only with vLLM's `ngram` proposer, and checked
-  on tokens, not logits hashes.
-- Sampling uses only temperature and seed. top-k, top-p, min-p, repetition penalties and logit bias are
-  ignored. Requests without a seed use seed 0, so two such requests with the same temperature get the same
-  noise.
-- logprobs returned by vLLM are computed from the integer logits converted to float32 and are approximate;
-  the reproducible outputs are the tokens and the integer logits hashes.
-- Tested with the offline `LLM` / `LLMEngine` API only, not `vllm serve`.
-- Cross-GPU tests covered H100 and H800 only (both sm90).
-- The attention kernel is memory-bound on long context: each key is read twice (once for the maximum, once for
-  the weighted sums), and each score uses nine int8 limb products.
-
-</details>
-
-### RL rollouts and failure replay
-
-[experiments/rl_mismatch](experiments/rl_mismatch/README.md) reruns grader-flagged RL failures (Llama-3.2-1B,
-GSM8K, 1,024 rollouts). With stock vLLM bf16 only 13–17% replay token for token on rerun (same config, new batch
-or new GPU), and sampler and trainer (HF bf16) differ on 99.99% of token log-probs. With the plugin and the
-standalone integer engine, 1,007/1,007 flagged failures replay on H800, H100 and CPU and the sampler–trainer
-difference is exactly zero. That experiment ran inference only.
-
-[experiments/abc_rl](experiments/abc_rl/RESULTS.md) then trained Llama-3.2-1B on GSM8K with GRPO (200 steps, 64
-rollouts per step, 4 seeds per arm), varying only which arithmetic gives the sampler and trainer log p; gradients
-always come from the HF bf16 graph. With integer sampling and integer rescoring (the integer value is used, the
-float graph supplies the gradient) the sampler–trainer difference is 0 on every token of every step, as it is
-with vLLM's batch-invariant mode; their step-200 accuracies were 0.177 ± 0.024 and 0.181 ± 0.015 (no difference
-detected). Integer sampling with a bf16 trainer and no correction collapsed in 2 of 2 seeds.
-
-The integer arm runs on the vLLM plugin in-process: after each optimizer step the new int8 weights are copied
-into the live model (load-time bounds are re-checked first; a failure raises before anything is written), and a
-scoring request returns exact integer log p from the prefill pass. Rollouts and log p are bit-identical to the
-standalone integer engine. Run as a fourth arm at 4 seeds, it reached 0.150 ± 0.017 at step 200 against 0.177 ±
-0.024 for the standalone integer arm and 0.181 ± 0.015 for batch-invariant vLLM, inside one seed SD of each (Welch
-p 0.13 against the integer arm); the plugin changes nothing that is trained on, so the rest of the spread is the
-H800 vs H100 backward and the non-reproducible HF bf16 backward. A fused prefill path (four kernels per layer
-instead of about 28) raised 1B prefill throughput 1.41x to 1.59x, to about 40% of stock vLLM. Seconds per RL step
-on one H800, same session (two runs):
-
-| Arm | Step | Sampling | Rescoring | Trainer |
-|---|---|---|---|---|
-| bf16 vLLM sampler, bf16 trainer | 11.4 / 10.3 | 5.9 / 5.2 | 0 | 5.5 / 5.2 |
-| vLLM batch-invariant sampler and rescoring | 14.0 / 13.2 | 5.4 / 5.1 | 3.2 / 2.9 | 5.3 / 5.2 |
-| integer, standalone engine | 28.2 | 15.1 | 7.7 | 5.3 |
-| integer, plugin | 15.1 / 14.3 | 5.7 / 5.3 | 4.0 / 3.8 | 5.4 / 5.2 |
-| integer, plugin, fused log p and prompt cache reuse (later session) | 12.6 / 11.9 | 5.6 / 5.2 | 1.6 / 1.5 | 5.3 / 5.2 |
-
-The last row is from a later session on the same GPU, where batch-invariant vLLM measured 13.5 / 13.4 s and the
-bf16 arm 11.3 / 10.8 s: rescoring now computes integer log p from the LM-head output in two Triton passes
-without storing int64 logits, and reuses the prompt's cached KV blocks (the prefix cache is reset after every
-weight update). All of these RL arms, including the integer ones, use int8-quantized weights. The standalone-engine row is from an earlier session on the same GPU type. The HF bf16 backward itself was not
-bit-reproducible on that host (two runs with the same rollouts gave different gradient norms at step 0), so
-whole training trajectories do not repeat exactly even when sampling and log p do.
+GPU tests (Triton kernels, cuBLAS path, vLLM kernels) run when CUDA is present and skip otherwise. Unit
+tests compare each primitive with Python big-integer and `Fraction` references.
 
 ## Limitations
 
@@ -600,8 +157,6 @@ whole training trajectories do not repeat exactly even when sampling and log p d
 - The constants file of exact mode is about 4.8 GB (3 bytes per weight plus residuals and tables).
 - Not a serving system: the standalone engines have no paging or scheduler, and prefill is slow. The vLLM
   plugin provides paging, but only through the offline API (see above).
-- `bitexact.det_float` is a float engine: its results are fixed only for one GPU architecture and Triton
-  version, unlike the integer modes.
 
 ## Related work
 

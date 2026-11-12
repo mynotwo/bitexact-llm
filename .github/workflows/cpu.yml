@@ -27,13 +27,15 @@ jobs:
           python -m pip install -e '.[test]' ruff
       - name: Lint reproduction and bound changes
         run: >-
-          ruff check src/bitexact/repro.py examples/check_bit_identity.py
-          src/bitexact/exact/model.py src/bitexact/exact/segs.py src/bitexact/exact/wmm.py
-          tests/test_repro.py tests/test_model_bounds.py
+          ruff check src/bitexact/repro.py src/bitexact/synthetic.py src/bitexact/sampling.py
+          src/bitexact/generate.py src/bitexact/exact/model.py src/bitexact/exact/segs.py src/bitexact/exact/wmm.py
+          tests/test_repro.py tests/test_model_bounds.py tests/test_synthetic.py
       - name: Run tests (model and CUDA cases explicitly skip without their prerequisites)
         run: python -m pytest -q --junitxml=test-results.xml
       - name: Record weight-free arithmetic checks
         run: python -m bitexact.repro self-check --out arithmetic-linux-py${{ matrix.python }}.json
+      - name: Record a whole-model identity report on the synthetic checkpoint
+        run: python -m bitexact.repro record --synthetic --out synthetic-linux-py${{ matrix.python }}.json
       - name: Build installable wheel
         run: python -m pip wheel --no-deps . --wheel-dir dist
       - name: Install and exercise the wheel outside the source checkout
@@ -47,6 +49,7 @@ jobs:
           path: |
             arithmetic-linux-py${{ matrix.python }}.json
             arithmetic-wheel-py${{ matrix.python }}.json
+            synthetic-linux-py${{ matrix.python }}.json
             test-results.xml
             dist/*.whl
           if-no-files-found: error

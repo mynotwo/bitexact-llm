@@ -36,6 +36,24 @@ The [CPU workflow](../.github/workflows/cpu.yml) runs the test suite, builds a
 wheel and uploads its own arithmetic JSON and JUnit results. Its green status
 covers CPU checks only. CUDA and model cases skip without their prerequisites.
 
+## 1b. Whole-model path without model weights
+
+`bitexact.synthetic` builds a 2-layer bf16 Llama (hidden 512, vocabulary 512)
+from PCG64 raw words, so its bytes are the same everywhere. It goes through the
+same constants build, forward pass, KV cache and integer sampler as a real
+checkpoint, and takes seconds on a laptop CPU:
+
+```bash
+python -m bitexact.repro record --synthetic --out synth-mine.json
+python -m bitexact.repro compare synth-reference.json synth-mine.json
+```
+
+`tests/test_synthetic.py` pins the weight, constants and logits-row digests
+recorded on Apple M4 Pro (arm64). CI recomputes them on Linux x86_64, so every
+green CPU run is a cross-architecture check of the full engine on this model.
+It is not a Llama-3.2-1B result: the synthetic weights do not exercise the real
+model's value ranges.
+
 ## 2. Record actual model identity
 
 Obtain Llama-3.2-1B through your own authorized model access, retaining its model
@@ -94,9 +112,8 @@ Exit codes:
 
 The comparator rejects empty, missing and extra rows, malformed hashes, failed
 checks, duplicate JSON keys, incompatible experiments and a single report. It
-does not accept legacy unversioned reports: rerun the recorder. The original
-`examples/check_bit_identity.py` delegates to the new CLI; its current default
-is 16 generated positions per prompt, recorded explicitly in the contract.
+does not accept legacy unversioned reports: rerun the recorder. The default is
+16 generated positions per prompt, recorded explicitly in the contract.
 
 ## 3. Share an external reproduction
 
@@ -121,7 +138,7 @@ rejected. Regression tests cover boundary values, cancellation, wraparound and
 
 These are additional failure checks, not a proof of all intermediate bounds.
 They retain the existing GEMM, sparse accumulation and constants input contracts.
-Historical whole-model identity and throughput tables in the README predate the
+Historical whole-model identity and throughput tables in `docs/RESULTS.md` predate the
 new guards. Re-establishing them on the changed source requires actual model and
 hardware runs. The vLLM plugin is an int8 path with its own existing suite;
 standalone reports do not certify that plugin or `vllm serve`.

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bitexact"
 version = "0.1.0"
-description = "Bit-reproducible Llama inference with integer arithmetic: identical logits across GPUs, CPUs, batch sizes and KV-cache schedules"
+description = "Bit-reproducible inference for unmodified bf16 Llama models: identical logits across GPUs, CPUs, batch sizes and KV-cache schedules"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"

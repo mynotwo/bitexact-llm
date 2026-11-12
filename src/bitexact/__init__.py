@@ -1,9 +1,10 @@
-"""bitexact: bit-reproducible Llama-3.2-1B inference with integer arithmetic.
+"""bitexact: bit-reproducible Llama inference with integer arithmetic.
 
-  bitexact.exact        original bf16 weights, int64 fixed-point activations, exact limb int8 GEMMs
-  bitexact.int8         int8 weights: faster, quantized integer model
-  bitexact.vllm_plugin  the int8 engine inside vLLM (optional extra)
-  bitexact.det_float    batch-invariant float bf16 engine (Triton), for comparison
+  bitexact.exact        the engine: original bf16 weights, int64 fixed-point activations, exact limb GEMMs
+  bitexact.repro        identity reports: self-check, record, compare
+  bitexact.synthetic    platform-independent synthetic checkpoint for weight-free whole-model checks
+  bitexact.vllm_plugin  the integer engines inside vLLM (optional extra)
+  bitexact.int8         int8 weights: faster, but a quantized (different) model
 """
 
 from bitexact.generate import generate, load, logits_sha
