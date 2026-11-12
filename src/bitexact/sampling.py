@@ -24,17 +24,18 @@ UMIN = 9008                  # u is clipped to [1e-12, 1 - 1e-12]: 1e-12 * 2^53 
 _POOL = None
 
 
-def _raw(key):
-    return np.random.default_rng([SEED_BASE, int(key[0]), int(key[1])]).bit_generator.random_raw(V)
+def _raw(key, n=V):
+    return np.random.default_rng([SEED_BASE, int(key[0]), int(key[1])]).bit_generator.random_raw(n)
 
 
-def raw_rows(keys):
-    """[(seed, t)] -> int64 tensor [n, V] of PCG64 raw words (CPU)."""
+def raw_rows(keys, n=V):
+    """[(seed, t)] -> int64 tensor [len(keys), n] of PCG64 raw words (CPU). A smaller vocabulary n takes the
+    first n words of the same stream."""
     global _POOL
     if _POOL is None:
         _POOL = ThreadPoolExecutor(16)
-    rows = list(_POOL.map(_raw, keys))
-    return torch.from_numpy(np.stack(rows).view(np.int64)) if rows else torch.zeros(0, V, dtype=torch.long)
+    rows = list(_POOL.map(lambda k: _raw(k, n), keys))
+    return torch.from_numpy(np.stack(rows).view(np.int64)) if rows else torch.zeros(0, n, dtype=torch.long)
 
 
 def ln_q(n, lnt):

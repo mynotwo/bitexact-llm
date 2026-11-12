@@ -193,11 +193,13 @@ def _batch_verify(model, prompts, tokens, rows, batch_size, tn=7, td=10):
     from bitexact.generate import choose, logits_sha
     from bitexact.llama import PAD
 
+    emb = getattr(model, "emb", None)
+    pad = PAD if emb is None or PAD < emb.shape[0] else 0          # synthetic vocabularies are small
     for start in range(0, len(prompts), batch_size):
         indices = list(range(start, min(start + batch_size, len(prompts))))
         sequences = [prompts[i] + tokens[i][:-1] for i in indices]
         length = max(map(len, sequences))
-        ids = torch.full((len(indices), length), PAD, dtype=torch.long, device=model.dev)
+        ids = torch.full((len(indices), length), pad, dtype=torch.long, device=model.dev)
         for r, seq in enumerate(sequences):
             ids[r, :len(seq)] = torch.tensor(seq, device=model.dev)
         pos = torch.arange(length, device=model.dev).expand(len(indices), length).contiguous()
@@ -221,20 +223,25 @@ def record(args):
     from bitexact.sampling import SEED_BASE
 
     torch.set_num_threads(args.threads)
-    # Load only a constants file you built yourself; torch pickle is not an untrusted-report format.
-    c = torch.load(args.const, map_location="cpu", weights_only=False)
+    prompts = PROMPTS
+    if args.synthetic:
+        from bitexact import synthetic
+        c, prompts = synthetic.constants(), synthetic.PROMPTS
+    else:
+        # Load only a constants file you built yourself; torch pickle is not an untrusted-report format.
+        c = torch.load(args.const, map_location="cpu", weights_only=False)
     mode = "exact" if "lm.limbs" in c else "int8"
     digest = (exact_digest if mode == "exact" else int8_digest)(c)
     if c.get("sha256") != digest:
         raise ValueError("constants digest does not match its stored identity")
     report = {"schema": SCHEMA, "contract": {"constants_sha256": digest, "mode": mode,
-              "n_layers": c["n_layers"], "prompts": PROMPTS, "max_new": args.max_new,
+              "n_layers": c["n_layers"], "prompts": prompts, "max_new": args.max_new,
               "temperature": [7, 10], "seed_base": 0, "sampler_seed_base": SEED_BASE},
               "checks": dict.fromkeys(CHECKS, True),
               "env": environment(), "rows": {}}
     # Validate the configuration before loading a large engine or running inference.
     contract_only = {**report, "rows": {f"{i}:{t}": ["0" * 64, 0]
-                                      for i in range(len(PROMPTS)) for t in range(args.max_new)}}
+                                      for i in range(len(prompts)) for t in range(args.max_new)}}
     validate(contract_only)
     kw = {"compiled": args.compiled, **({"gemm": args.gemm} if mode == "exact" else {})}
     model = load(c, args.device, **kw)
@@ -248,12 +255,12 @@ def record(args):
         report["env"]["gemm"] = model.lm.gemm
     tokens = []
     with torch.no_grad():
-        for i, prompt in enumerate(PROMPTS):
+        for i, prompt in enumerate(prompts):
             seq, hashes = generate(model, prompt, args.max_new, 7, 10, seed=i)
             tokens.append(seq)
             report["rows"].update({f"{i}:{t}": [h, tok] for t, (h, tok) in enumerate(zip(hashes, seq))})
-            print(f"recorded prompt {i + 1}/{len(PROMPTS)}", flush=True)
-        _batch_verify(model, PROMPTS, tokens, report["rows"], args.batch_size)
+            print(f"recorded prompt {i + 1}/{len(prompts)}", flush=True)
+        _batch_verify(model, prompts, tokens, report["rows"], args.batch_size)
         model.check()
     validate(report)
     status = 0
@@ -274,7 +281,10 @@ def main(argv=None):
     smoke = sub.add_parser("self-check", help="CPU arithmetic checks; no GPU, weights or network")
     smoke.add_argument("--out", required=True)
     r = sub.add_parser("record", help="record a local constants file and verify incremental/batched identity")
-    r.add_argument("--const", required=True)
+    src = r.add_mutually_exclusive_group(required=True)
+    src.add_argument("--const", help="constants file you built from your own checkpoint")
+    src.add_argument("--synthetic", action="store_true",
+                     help="the weight-free synthetic checkpoint (bitexact.synthetic): full model path, any machine")
     r.add_argument("--out", required=True)
     r.add_argument("--reference", help="optional v1 report from another device; failure exits nonzero")
     r.add_argument("--device", default="cpu")

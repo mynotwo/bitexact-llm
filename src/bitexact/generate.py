@@ -26,7 +26,7 @@ def logits_sha(row):
 def choose(model, logits, keys, tn, td):
     """Tokens for logits rows [M, V]: greedy (tn = 0) or Gumbel-max at T = tn / td with the noise of
     keys [(seed, t)] (one per row)."""
-    g = gumbel(raw_rows(keys).to(logits.device), model.ln, model.FR) if tn else None
+    g = gumbel(raw_rows(keys, logits.shape[-1]).to(logits.device), model.ln, model.FR) if tn else None
     return sample(logits, tn, td, g)
 
 
