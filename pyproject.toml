@@ -31,6 +31,8 @@ markers = ["gpu: needs a CUDA device", "slow: needs a model checkpoint or consta
 
 [tool.ruff]
 line-length = 120
+# `ruff check` lints src/, tests/ and examples/. experiments/ holds recorded runs: evidence, not maintained source.
+extend-exclude = ["experiments"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
@@ -38,3 +40,33 @@ ignore = ["E731"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["bitexact"]
+
+# Known findings from before the whole tree was linted; every other selected rule passes in these files.
+# Most are CUDA-only files, to be fixed together with a change that is tested on a GPU. Remove an entry
+# when its file is fixed; new files get the full rule set.
+[tool.ruff.lint.per-file-ignores]
+"src/bitexact/int8/gemm_skinny.py" = ["E501"]
+"src/bitexact/int8/gemm_sm90.py" = ["W292"]
+"src/bitexact/int8/model.py" = ["E501"]
+"src/bitexact/int8/segs.py" = ["E501"]
+"src/bitexact/vllm_plugin/exact_run.py" = ["E501"]
+"src/bitexact/vllm_plugin/paged.py" = ["I001"]
+"src/bitexact/vllm_plugin/prefill.py" = ["E501"]
+"src/bitexact/vllm_plugin/sampler.py" = ["E501", "I001"]
+"src/bitexact/vllm_plugin/tri_logp.py" = ["E501"]
+"src/bitexact/vllm_plugin/tri_paged.py" = ["E501", "F401"]
+"src/bitexact/vllm_plugin/tri_prefill.py" = ["I001"]
+"src/bitexact/vllm_plugin/tri_sample.py" = ["F401"]
+"tests/test_gemm_skinny.py" = ["E702"]
+"tests/test_gemm_sm90.py" = ["W292"]
+"tests/test_int8_ops.py" = ["E501"]
+"tests/test_tri_fuse.py" = ["E501", "F401"]
+"tests/test_vllm_exact_fuse.py" = ["F841"]
+"tests/test_vllm_exact_gemm.py" = ["E501"]
+"tests/test_vllm_kernels.py" = ["E501"]
+"tests/vllm/longctx_step.py" = ["E501"]
+"tests/vllm/run_ref.py" = ["E501"]
+"tests/vllm/run_serve.py" = ["E501"]
+"tests/vllm/spec_check.py" = ["E501", "F401"]
+"tests/vllm/test_decode_paths.py" = ["F401"]
+"tests/vllm/test_overflow_check.py" = ["I001"]
