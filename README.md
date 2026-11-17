@@ -179,6 +179,8 @@ GPU=3 BF16_MODEL=PATH/Llama-3.2-1B MODEL=intmodel bash tests/vllm/bench_seq.sh
 ## Tests
 
 ```
+python -m pip install -e '.[test]' ruff      # once
+bash scripts/check.sh                        # what CI runs: lint, CPU tests, arithmetic self-check, wheel
 pytest -q                                    # CPU unit tests; GPU tests run when CUDA is present
 BITEXACT_EXACT_CONST=exact_const.pt BITEXACT_INT8_CONST=int8_const.pt pytest -q -m slow
 BITEXACT_INT8_CONST=int8_const.pt pytest -q tests/vllm/test_decode_paths.py   # plugin decode paths, CUDA
